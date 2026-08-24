@@ -343,6 +343,28 @@ func TestPacketPacingGroupsPacketsIntoBursts(t *testing.T) {
 	}
 }
 
+func TestResendStormClearsHistoryAndStartsCooldown(t *testing.T) {
+	client := &Client{
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		history: map[uint32][]byte{1: {1}, 2: {2}},
+	}
+	now := time.Now()
+	for i := 0; i < resendStormLimit-1; i++ {
+		if client.recordResendLocked(now, 1) {
+			t.Fatalf("resend storm fired after %d requests", i+1)
+		}
+	}
+	if !client.recordResendLocked(now, 1) {
+		t.Fatal("resend storm did not fire at request limit")
+	}
+	if len(client.history) != 0 {
+		t.Fatalf("history length after storm = %d, want 0", len(client.history))
+	}
+	if got := time.Unix(0, client.nackCooldownUntil.Load()); !got.After(now) {
+		t.Fatalf("cooldown deadline = %v, want after %v", got, now)
+	}
+}
+
 type testColor struct{}
 
 func (testColor) RGBA() (uint32, uint32, uint32, uint32) { return 0x1111, 0x2222, 0x3333, 0xFFFF }

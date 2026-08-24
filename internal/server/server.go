@@ -328,6 +328,7 @@ func (s *Server) switchSession(key string, selection sessionSelection, logger *s
 	s.active[key] = active
 	s.mu.Unlock()
 	active.client.SetInputHandler(nil)
+	active.client.SetResyncHandler(nil)
 	go s.runSession(sessionCtx, key, active, generation, selection, definition, logger)
 }
 
@@ -486,6 +487,7 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 			return nil
 		},
 	})
+	active.client.SetResyncHandler(session.RequestFullFrame)
 	active.client.SetInputHandler(session.HandleInput)
 	session.Run(ctx)
 }
@@ -519,6 +521,7 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 			return nil
 		},
 	})
+	active.client.SetResyncHandler(session.RequestFullFrame)
 	active.client.SetInputHandler(session.HandleInput)
 	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Warn("RDP session stopped", "server", address, "error", err)

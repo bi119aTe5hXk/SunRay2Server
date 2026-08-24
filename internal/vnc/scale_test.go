@@ -142,6 +142,23 @@ func TestChangedRectanglesKeepDistantUpdatesSeparate(t *testing.T) {
 	}
 }
 
+func TestRequestFullFrameSchedulesLatestFramebuffer(t *testing.T) {
+	session := NewSession(Config{})
+	session.latestFrame = image.NewRGBA(image.Rect(0, 0, 1400, 1050))
+	session.RequestFullFrame()
+	if len(session.pendingChanged) != 1 || session.pendingChanged[0] != session.latestFrame.Bounds() {
+		t.Fatalf("pending full-frame rectangles = %v", session.pendingChanged)
+	}
+	if !session.pendingResized {
+		t.Fatal("full-frame request was not marked for complete redraw")
+	}
+	select {
+	case <-session.frameWake:
+	default:
+		t.Fatal("full-frame request did not wake delivery loop")
+	}
+}
+
 func readPointerMessage(t *testing.T, conn net.Conn) []byte {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {

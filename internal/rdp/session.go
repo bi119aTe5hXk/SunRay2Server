@@ -64,6 +64,17 @@ func (s *Session) HandleInput(event display.InputEvent) {
 	}
 }
 
+// RequestFullFrame forwards a Sun Ray transport resynchronization request to
+// the active loopback VNC bridge.
+func (s *Session) RequestFullFrame() {
+	s.mu.RLock()
+	current := s.current
+	s.mu.RUnlock()
+	if current != nil {
+		current.RequestFullFrame()
+	}
+}
+
 func (s *Session) Run(ctx context.Context) error {
 	if s.config.ScreenWidth < 1 || s.config.ScreenHeight < 1 {
 		return fmt.Errorf("invalid RDP display resolution %dx%d", s.config.ScreenWidth, s.config.ScreenHeight)

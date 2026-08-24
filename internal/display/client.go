@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +22,13 @@ const (
 	nackOpenEnded    = 0x00FFFFFF
 	operationSeqMod  = 1 << 16
 	packetBurstSize  = 8
+	resendStormLimit = 64
+	resendStormOps   = 4096
+)
+
+const (
+	resendStormWindow   = 2 * time.Second
+	resendStormCooldown = 2 * time.Second
 )
 
 type nackRange struct {
@@ -40,6 +48,7 @@ type Client struct {
 	mu                 sync.Mutex
 	renderMu           sync.Mutex
 	inputMu            sync.Mutex
+	resyncMu           sync.RWMutex
 	packetSeq          uint16
 	opSeq              uint32
 	history            map[uint32][]byte
@@ -47,11 +56,19 @@ type Client struct {
 	burstStarted       time.Time
 	lastMissingNACKLog time.Time
 	missingNACKs       int
+	lastResendLog      time.Time
+	resendLogRequests  int
+	resendLogOps       int
+	resendWindowStart  time.Time
+	resendWindowCount  int
+	resendWindowOps    int
+	nackCooldownUntil  atomic.Int64
 	nackRequests       chan nackRange
 	done               chan struct{}
 	closed             bool
 	decoder            inputDecoder
 	onInput            func(InputEvent)
+	onResync           func()
 	lastPointerLog     time.Time
 	lastPointerButtons uint8
 }
@@ -63,6 +80,14 @@ func (c *Client) SetInputHandler(handler func(InputEvent)) {
 	c.inputMu.Lock()
 	c.onInput = handler
 	c.inputMu.Unlock()
+}
+
+// SetResyncHandler installs a non-blocking session callback that schedules a
+// latest full-frame redraw after a resend storm is reset.
+func (c *Client) SetResyncHandler(handler func()) {
+	c.resyncMu.Lock()
+	c.onResync = handler
+	c.resyncMu.Unlock()
 }
 
 func Open(remoteIP net.IP, remotePort int, delay time.Duration, logInputEvents bool, logger *slog.Logger) (*Client, error) {
@@ -290,6 +315,9 @@ func (c *Client) dispatchInput(event InputEvent) {
 }
 
 func (c *Client) queueResend(marker, from, to uint32) {
+	if time.Now().UnixNano() < c.nackCooldownUntil.Load() {
+		return
+	}
 	if !validNACKRange(from, to) {
 		c.log.Warn("ignored invalid NACK range", "from", from, "to", to)
 		return
@@ -334,18 +362,37 @@ func (c *Client) resendLoop() {
 	for {
 		select {
 		case req := <-c.nackRequests:
-			c.resend(req.marker, req.from, req.to)
+			if c.resend(req.marker, req.from, req.to) {
+				c.drainNACKRequests()
+				c.resyncMu.RLock()
+				handler := c.onResync
+				c.resyncMu.RUnlock()
+				if handler != nil {
+					handler()
+				}
+			}
 		case <-c.done:
 			return
 		}
 	}
 }
 
-func (c *Client) resend(marker, from, to uint32) {
+func (c *Client) drainNACKRequests() {
+	for {
+		select {
+		case <-c.nackRequests:
+		default:
+			return
+		}
+	}
+}
+
+// resend reports whether the resend storm circuit breaker fired.
+func (c *Client) resend(marker, from, to uint32) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return
+		return false
 	}
 	requestedFrom, requestedTo := from, to
 	from = extendOperationSequence(from, c.opSeq)
@@ -364,6 +411,9 @@ func (c *Client) resend(marker, from, to uint32) {
 		if to-from+1 > maxResendBatch {
 			to = from + maxResendBatch - 1
 		}
+		if _, ok := c.history[from]; ok && c.recordResendLocked(time.Now(), int(to-from+1)) {
+			return true
+		}
 		for seq := from; seq <= to; seq++ {
 			encoded, ok := c.history[seq]
 			if !ok {
@@ -371,7 +421,7 @@ func (c *Client) resend(marker, from, to uint32) {
 			}
 			if err := c.sendLocked(encoded); err != nil {
 				c.log.Warn("display resend failed", "sequence", seq, "error", err)
-				return
+				return false
 			}
 			resent++
 			lastResent = seq
@@ -383,9 +433,8 @@ func (c *Client) resend(marker, from, to uint32) {
 		// makes Sun Ray 2 firmware immediately repeat the request, creating a
 		// self-sustaining request/completion loop after a server restart.
 		c.logMissingNACKLocked(marker, from, to, requestedFrom, requestedTo)
-		return
+		return false
 	}
-	c.log.Debug("resending display operations", "marker", marker, "from", from, "to", to, "requested_from", requestedFrom, "requested_to", requestedTo)
 	pad := Pad().WithSequence(uint16(c.opSeq)).Bytes
 	// Report the actual replay watermark. For an open-ended or future request,
 	// echoing 0xffff/requestedTo makes the terminal restart from the same
@@ -399,9 +448,58 @@ func (c *Client) resend(marker, from, to uint32) {
 	completion = append(completion, status...)
 	if err := c.sendLocked(completion); err != nil {
 		c.log.Warn("display resend completion failed", "error", err)
+		return false
+	}
+	c.logResendLocked(marker, from, to, lastResent, requestedFrom, requestedTo, resent)
+	return false
+}
+
+func (c *Client) logResendLocked(marker, from, to, watermark, requestedFrom, requestedTo uint32, resent int) {
+	c.resendLogRequests++
+	c.resendLogOps += resent
+	now := time.Now()
+	if !c.lastResendLog.IsZero() && now.Sub(c.lastResendLog) < time.Second {
 		return
 	}
-	c.log.Debug("display operation resend complete", "marker", marker, "from", from, "to", to, "watermark", lastResent, "requested_from", requestedFrom, "requested_to", requestedTo, "resent", resent)
+	c.log.Debug("display operations resent",
+		"marker", marker,
+		"from", from,
+		"to", to,
+		"watermark", watermark,
+		"requested_from", requestedFrom,
+		"requested_to", requestedTo,
+		"requests_since_last_log", c.resendLogRequests,
+		"operations_since_last_log", c.resendLogOps,
+	)
+	c.lastResendLog = now
+	c.resendLogRequests = 0
+	c.resendLogOps = 0
+}
+
+func (c *Client) recordResendLocked(now time.Time, operations int) bool {
+	if c.resendWindowStart.IsZero() || now.Sub(c.resendWindowStart) > resendStormWindow {
+		c.resendWindowStart = now
+		c.resendWindowCount = 0
+		c.resendWindowOps = 0
+	}
+	c.resendWindowCount++
+	c.resendWindowOps += operations
+	if c.resendWindowCount < resendStormLimit && c.resendWindowOps < resendStormOps {
+		return false
+	}
+	requests, replayOperations := c.resendWindowCount, c.resendWindowOps
+	clear(c.history)
+	c.resendWindowStart = time.Time{}
+	c.resendWindowCount = 0
+	c.resendWindowOps = 0
+	c.nackCooldownUntil.Store(now.Add(resendStormCooldown).UnixNano())
+	c.log.Warn("display resend storm reset",
+		"requests", requests,
+		"operations", replayOperations,
+		"cooldown", resendStormCooldown,
+		"sequence", c.opSeq,
+	)
+	return true
 }
 
 func (c *Client) logMissingNACKLocked(marker, from, to, requestedFrom, requestedTo uint32) {

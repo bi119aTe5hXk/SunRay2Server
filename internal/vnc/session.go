@@ -56,6 +56,23 @@ func NewSession(config Config) *Session {
 	}
 }
 
+// RequestFullFrame schedules the latest complete framebuffer as a resize-style
+// update. It is used after the Sun Ray transport drops stale resend history.
+func (s *Session) RequestFullFrame() {
+	s.frameMu.Lock()
+	if s.latestFrame == nil {
+		s.frameMu.Unlock()
+		return
+	}
+	s.pendingChanged = []image.Rectangle{s.latestFrame.Bounds()}
+	s.pendingResized = true
+	s.frameMu.Unlock()
+	select {
+	case s.frameWake <- struct{}{}:
+	default:
+	}
+}
+
 func (s *Session) Run(ctx context.Context) {
 	go s.pointerLoop(ctx)
 	go s.frameLoop(ctx)
