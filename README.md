@@ -298,6 +298,17 @@ in `PATH`. They are already installed in the supplied Docker image. Native macOS
 builds can still run card-test, VNC, and SSH without these helpers; selecting an
 RDP session reports the missing executable in the log.
 
+For native macOS RDP operation, install the XQuartz X server and the two
+Homebrew tools, then open a new terminal before starting `sunrayd`:
+
+```sh
+brew install --cask xquartz
+brew install freerdp x11vnc
+```
+
+The server also checks the standard Apple Silicon and Intel Homebrew paths and
+`/opt/X11/bin/Xvfb` directly, so it does not depend solely on shell PATH setup.
+
 ## Run
 
 With the built-in 640x360 test pattern:
@@ -396,10 +407,38 @@ SSH terminal fonts. The local `config.yaml` and real secret files are excluded
 from the Docker build context. The Debian runtime also contains FreeRDP, Xvfb,
 and the loopback VNC bridge required by RDP sessions.
 
-Docker Desktop requires host networking to be enabled explicitly. Because its
-LAN source-address and UDP behavior can differ from native Linux, macOS hardware
-testing should continue with the native binary unless the Docker Desktop path
-has been verified with the physical Sun Ray.
+Docker Desktop requires host networking to be enabled explicitly. Open
+**Settings > Resources > Network**, check **Enable host networking**, then choose
+**Apply & restart** before starting this Compose project. Without that setting,
+Compose still accepts `network_mode: host`, but TCP 7009 is not exposed on the
+Mac and the Sun Ray cannot discover or connect to the server. After Docker
+Desktop restarts, recreate the container:
+
+```sh
+docker compose down
+SUNRAY_CONFIG=./config.yaml docker compose up --build
+```
+
+Confirm from the Mac that the authentication listener is reachable:
+
+```sh
+nc -vz 127.0.0.1 7009
+```
+
+Docker Desktop proxies incoming host-network connections. If the authentication
+log reports `client_ip=::1` rather than the Sun Ray's LAN address, configure the
+real destination by terminal serial number:
+
+```yaml
+server:
+  terminal_ips:
+    "00144fd19044": 192.168.30.153
+```
+
+The override affects only the UDP display destination; session routing still
+uses the same serial normally. Add one entry per terminal when several Sun Rays
+connect through Docker Desktop. Native Linux and native `sunrayd` operation can
+omit this map because the TCP peer address remains visible.
 
 ## Point the Sun Ray at the server
 

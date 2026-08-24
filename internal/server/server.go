@@ -187,7 +187,18 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				return
 			}
 		case "connRsp":
-			if err := s.startDisplay(ctx, clientKey, remoteIP, properties, logger); err != nil {
+			displayIP := remoteIP
+			if configuredIP, ok := s.config.AppConfig.TerminalDisplayIP(properties["sn"]); ok {
+				displayIP = configuredIP
+				if !configuredIP.Equal(remoteIP) {
+					logger.Info("overriding terminal display destination", "authentication_peer", remoteIP.String(), "terminal_ip", configuredIP.String(), "serial", properties["sn"])
+				}
+			}
+			if displayIP.To4() == nil {
+				logger.Error("display startup failed", "error", fmt.Errorf("Sun Ray display requires an IPv4 destination; configure server.terminal_ips for serial %q", properties["sn"]))
+				continue
+			}
+			if err := s.startDisplay(ctx, clientKey, displayIP, properties, logger); err != nil {
 				logger.Error("display startup failed", "error", err)
 			}
 		default:

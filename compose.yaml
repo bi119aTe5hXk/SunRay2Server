@@ -4,6 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile
     image: sunray2server:local
+    # Required for the Sun Ray's TCP control channel and dynamic bidirectional
+    # UDP display channel. On Docker Desktop, first enable host networking in
+    # Settings > Resources > Network, then Apply & Restart.
     network_mode: host
     restart: unless-stopped
     secrets:

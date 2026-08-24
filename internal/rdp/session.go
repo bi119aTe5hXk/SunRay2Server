@@ -68,15 +68,15 @@ func (s *Session) Run(ctx context.Context) error {
 	if s.config.ScreenWidth < 1 || s.config.ScreenHeight < 1 {
 		return fmt.Errorf("invalid RDP display resolution %dx%d", s.config.ScreenWidth, s.config.ScreenHeight)
 	}
-	xvfbPath, err := findExecutable("Xvfb")
+	xvfbPath, err := findExecutable("Xvfb", "/opt/X11/bin/Xvfb")
 	if err != nil {
 		return err
 	}
-	x11vncPath, err := findExecutable("x11vnc")
+	x11vncPath, err := findExecutable("x11vnc", "/opt/homebrew/bin/x11vnc", "/usr/local/bin/x11vnc")
 	if err != nil {
 		return err
 	}
-	freerdpPath, err := findExecutable("xfreerdp3", "xfreerdp")
+	freerdpPath, err := findExecutable("xfreerdp3", "xfreerdp", "/opt/homebrew/bin/xfreerdp3", "/opt/homebrew/bin/xfreerdp", "/usr/local/bin/xfreerdp3", "/usr/local/bin/xfreerdp")
 	if err != nil {
 		return err
 	}
@@ -250,7 +250,7 @@ func findExecutable(names ...string) (string, error) {
 			return filepath.Clean(path), nil
 		}
 	}
-	return "", fmt.Errorf("required RDP helper not found in PATH: %s", strings.Join(names, " or "))
+	return "", fmt.Errorf("required RDP helper not found: %s (install the native RDP dependencies or use the Docker image)", strings.Join(names, " or "))
 }
 
 func environmentWith(environment []string, replacements map[string]string) []string {

@@ -212,6 +212,23 @@ func TestDisplayOverrideRequiresCompletePair(t *testing.T) {
 	}
 }
 
+func TestTerminalDisplayIP(t *testing.T) {
+	cfg := Default()
+	cfg.Server.TerminalIPs = map[string]string{"00144FD19044": "192.168.30.153"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ip, ok := cfg.TerminalDisplayIP("00144fd19044")
+	if !ok || ip.String() != "192.168.30.153" {
+		t.Fatalf("TerminalDisplayIP() = %v, %v", ip, ok)
+	}
+
+	cfg.Server.TerminalIPs["00144FD19044"] = "::1"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an IPv6 terminal display destination to fail")
+	}
+}
+
 func TestSSHRequiresAuthenticationAndHostKeyPolicy(t *testing.T) {
 	cfg := Default()
 	cfg.Sessions["ssh"] = Session{Type: "ssh", Hostname: "server", Port: 22, Username: "user"}

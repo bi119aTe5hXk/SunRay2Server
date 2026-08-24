@@ -35,14 +35,15 @@ type Config struct {
 }
 
 type Server struct {
-	Listen          string        `yaml:"listen"`
-	FallbackWidth   int           `yaml:"fallback_width"`
-	FallbackHeight  int           `yaml:"fallback_height"`
-	DisplayWidth    int           `yaml:"display_width,omitempty"`
-	DisplayHeight   int           `yaml:"display_height,omitempty"`
-	PacketDelay     time.Duration `yaml:"packet_delay"`
-	SmartcardListen string        `yaml:"smartcard_listen"`
-	LogInputEvents  bool          `yaml:"log_input_events,omitempty"`
+	Listen          string            `yaml:"listen"`
+	FallbackWidth   int               `yaml:"fallback_width"`
+	FallbackHeight  int               `yaml:"fallback_height"`
+	DisplayWidth    int               `yaml:"display_width,omitempty"`
+	DisplayHeight   int               `yaml:"display_height,omitempty"`
+	PacketDelay     time.Duration     `yaml:"packet_delay"`
+	SmartcardListen string            `yaml:"smartcard_listen"`
+	LogInputEvents  bool              `yaml:"log_input_events,omitempty"`
+	TerminalIPs     map[string]string `yaml:"terminal_ips,omitempty"`
 }
 
 type Session struct {
@@ -191,6 +192,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.PacketDelay < 0 {
 		return fmt.Errorf("packet_delay cannot be negative")
+	}
+	for serial, address := range c.Server.TerminalIPs {
+		if strings.TrimSpace(serial) == "" {
+			return fmt.Errorf("server.terminal_ips contains an empty terminal serial")
+		}
+		ip := net.ParseIP(strings.TrimSpace(address))
+		if ip == nil || ip.To4() == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+			return fmt.Errorf("server.terminal_ips.%s has invalid terminal IPv4 address %q", serial, address)
+		}
 	}
 	if len(c.Sessions) == 0 {
 		return fmt.Errorf("at least one session is required")
@@ -361,6 +371,17 @@ func (c *Config) Resolve(serial, cardID string, cardPresent bool) (string, bool)
 		return terminal.NoCard, true
 	}
 	return c.Routing.Default.NoCard, c.Routing.Default.NoCard != ""
+}
+
+// TerminalDisplayIP returns an explicitly configured terminal IPv4 address.
+// It is primarily needed when Docker Desktop proxies the authentication TCP
+// connection and hides the Sun Ray's original source address.
+func (c *Config) TerminalDisplayIP(serial string) (net.IP, bool) {
+	address, ok := lookupFold(c.Server.TerminalIPs, serial)
+	if !ok {
+		return nil, false
+	}
+	return net.ParseIP(strings.TrimSpace(address)).To4(), true
 }
 
 func lookupRoute(routes map[string]Route, key string) (Route, bool) {

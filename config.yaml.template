@@ -17,6 +17,11 @@ server:
   smartcard_listen: ""
   # Disabled by default because pointer motion can generate hundreds of events.
   log_input_events: false
+  # Docker Desktop proxies host-network TCP connections and may report ::1
+  # instead of the terminal's real address. Map each affected Sun Ray serial to
+  # its stable IPv4 address so the UDP display channel reaches the terminal.
+  # terminal_ips:
+  #   "00144fd19044": 192.168.30.153
 
 sessions:
   card-test:
