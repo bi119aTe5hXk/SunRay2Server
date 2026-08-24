@@ -28,8 +28,11 @@ type Server struct {
 	Listen          string        `yaml:"listen"`
 	FallbackWidth   int           `yaml:"fallback_width"`
 	FallbackHeight  int           `yaml:"fallback_height"`
+	DisplayWidth    int           `yaml:"display_width,omitempty"`
+	DisplayHeight   int           `yaml:"display_height,omitempty"`
 	PacketDelay     time.Duration `yaml:"packet_delay"`
 	SmartcardListen string        `yaml:"smartcard_listen"`
+	LogInputEvents  bool          `yaml:"log_input_events,omitempty"`
 }
 
 type Session struct {
@@ -143,6 +146,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.FallbackWidth < 1 || c.Server.FallbackWidth > 8192 || c.Server.FallbackHeight < 1 || c.Server.FallbackHeight > 8192 {
 		return fmt.Errorf("invalid fallback resolution %dx%d", c.Server.FallbackWidth, c.Server.FallbackHeight)
+	}
+	if (c.Server.DisplayWidth == 0) != (c.Server.DisplayHeight == 0) {
+		return fmt.Errorf("display_width and display_height must be set together")
+	}
+	if c.Server.DisplayWidth < 0 || c.Server.DisplayWidth > 8192 || c.Server.DisplayHeight < 0 || c.Server.DisplayHeight > 8192 {
+		return fmt.Errorf("invalid display override %dx%d", c.Server.DisplayWidth, c.Server.DisplayHeight)
 	}
 	if c.Server.PacketDelay < 0 {
 		return fmt.Errorf("packet_delay cannot be negative")

@@ -83,6 +83,25 @@ from the directory containing the YAML file. Unknown YAML fields, invalid
 session references and malformed addresses cause startup to fail instead of
 being silently ignored.
 
+Input event logging is disabled by default because raw pointer motion can
+produce hundreds of events per second. Enable it only for diagnostics:
+
+```yaml
+server:
+  log_input_events: true
+```
+
+`display_width` and `display_height` can override the logical canvas reported
+by the terminal. Both must be set together. This also limits the VNC update
+region, but it does not change the physical DVI timing selected by the Sun Ray
+firmware:
+
+```yaml
+server:
+  display_width: 1280
+  display_height: 720
+```
+
 VNC credentials are configured per session, so different servers can use
 different passwords. For a simple private-LAN test, they may be written directly
 in the ignored local `config.yaml`:

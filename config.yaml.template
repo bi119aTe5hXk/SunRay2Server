@@ -6,8 +6,15 @@ server:
   listen: ":7009"
   fallback_width: 1280
   fallback_height: 1024
+  # Optional logical canvas override. This limits framebuffer/VNC traffic but
+  # does not change the physical DVI timing selected by the Sun Ray firmware.
+  # Set both values or leave both commented.
+  # display_width: 1280
+  # display_height: 720
   packet_delay: 200us
   smartcard_listen: ""
+  # Disabled by default because pointer motion can generate hundreds of events.
+  log_input_events: false
 
 sessions:
   card-test:

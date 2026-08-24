@@ -20,10 +20,11 @@ const (
 
 // Client owns the bidirectional UDP display channel for one Sun Ray.
 type Client struct {
-	conn   *net.UDPConn
-	remote *net.UDPAddr
-	delay  time.Duration
-	log    *slog.Logger
+	conn           *net.UDPConn
+	remote         *net.UDPAddr
+	delay          time.Duration
+	log            *slog.Logger
+	logInputEvents bool
 
 	mu                 sync.Mutex
 	renderMu           sync.Mutex
@@ -47,7 +48,7 @@ func (c *Client) SetInputHandler(handler func(InputEvent)) {
 	c.inputMu.Unlock()
 }
 
-func Open(remoteIP net.IP, remotePort int, delay time.Duration, logger *slog.Logger) (*Client, error) {
+func Open(remoteIP net.IP, remotePort int, delay time.Duration, logInputEvents bool, logger *slog.Logger) (*Client, error) {
 	if remoteIP == nil || remotePort < 1 || remotePort > 65535 {
 		return nil, fmt.Errorf("invalid display destination %v:%d", remoteIP, remotePort)
 	}
@@ -60,11 +61,12 @@ func Open(remoteIP net.IP, remotePort int, delay time.Duration, logger *slog.Log
 		return nil, fmt.Errorf("open display UDP socket: %w", err)
 	}
 	c := &Client{
-		conn:    conn,
-		remote:  &net.UDPAddr{IP: remoteIP, Port: remotePort},
-		delay:   delay,
-		log:     logger,
-		history: make(map[uint16][]byte),
+		conn:           conn,
+		remote:         &net.UDPAddr{IP: remoteIP, Port: remotePort},
+		delay:          delay,
+		log:            logger,
+		logInputEvents: logInputEvents,
+		history:        make(map[uint16][]byte),
 	}
 	go c.readLoop()
 	return c, nil
@@ -213,6 +215,9 @@ func (c *Client) dispatchInput(event InputEvent) {
 	c.inputMu.Unlock()
 	if handler != nil {
 		handler(event)
+	}
+	if !c.logInputEvents {
+		return
 	}
 	if event.Kind == InputKey {
 		c.log.Debug("keyboard input", "hid", fmt.Sprintf("0x%02x", event.HID), "pressed", event.Pressed, "modifiers", fmt.Sprintf("0x%02x", event.Modifiers))

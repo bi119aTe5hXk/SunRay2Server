@@ -28,7 +28,10 @@ type Config struct {
 	ListenAddress  string
 	FallbackWidth  int
 	FallbackHeight int
+	DisplayWidth   int
+	DisplayHeight  int
 	PacketDelay    time.Duration
+	LogInputEvents bool
 	Image          image.Image
 	Logger         *slog.Logger
 	AppConfig      *appconfig.Config
@@ -236,7 +239,11 @@ func (s *Server) startDisplay(ctx context.Context, key string, remoteIP net.IP, 
 		return fmt.Errorf("invalid terminal display port pn=%q", properties["pn"])
 	}
 	width, height := parseResolution(properties["startRes"], s.config.FallbackWidth, s.config.FallbackHeight)
-	client, err := display.Open(remoteIP, port, s.config.PacketDelay, logger)
+	if s.config.DisplayWidth > 0 && s.config.DisplayHeight > 0 {
+		logger.Info("overriding terminal display geometry", "reported", fmt.Sprintf("%dx%d", width, height), "configured", fmt.Sprintf("%dx%d", s.config.DisplayWidth, s.config.DisplayHeight))
+		width, height = s.config.DisplayWidth, s.config.DisplayHeight
+	}
+	client, err := display.Open(remoteIP, port, s.config.PacketDelay, s.config.LogInputEvents, logger)
 	if err != nil {
 		return err
 	}

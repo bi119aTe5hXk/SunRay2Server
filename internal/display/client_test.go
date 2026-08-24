@@ -47,7 +47,7 @@ func TestUDPSendAndNACKResend(t *testing.T) {
 	defer receiver.Close()
 
 	remote := receiver.LocalAddr().(*net.UDPAddr)
-	client, err := Open(remote.IP, remote.Port, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

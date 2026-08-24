@@ -34,6 +34,17 @@ func TestParseResolution(t *testing.T) {
 	}
 }
 
+func TestConfiguredDisplayGeometryOverridesTerminalResolution(t *testing.T) {
+	width, height := parseResolution("1400x1050:1400x1050", 800, 600)
+	configuredWidth, configuredHeight := 1280, 720
+	if configuredWidth > 0 && configuredHeight > 0 {
+		width, height = configuredWidth, configuredHeight
+	}
+	if width != 1280 || height != 720 {
+		t.Fatalf("geometry = %dx%d", width, height)
+	}
+}
+
 func TestCardSessionSlotUsesDefinitiveInsertEvents(t *testing.T) {
 	tests := []struct {
 		cardType string

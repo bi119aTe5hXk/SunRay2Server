@@ -126,6 +126,18 @@ func TestVNCPasswordSourcesArePerSessionAndMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestDisplayOverrideRequiresCompletePair(t *testing.T) {
+	cfg := Default()
+	cfg.Server.DisplayWidth = 1280
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected incomplete display override to fail")
+	}
+	cfg.Server.DisplayHeight = 720
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProjectTemplateLoads(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "config.yaml.template"))
 	if err != nil {
