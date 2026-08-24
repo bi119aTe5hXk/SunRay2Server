@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+package display
+
+import (
+	"encoding/binary"
+	"fmt"
+	"image"
+	"image/color"
+)
+
+const (
+	opFill      = 0xA2
+	opBitmapRGB = 0xA6
+	opBounds    = 0xA8
+	opCursor    = 0xA9
+	opPad       = 0xAF
+)
+
+// Operation is one ALP display operation. The first 12 bytes are its header.
+type Operation struct {
+	Bytes     []byte
+	Increment bool
+}
+
+func operation(code byte, x, y, width, height int, payloadLen int) Operation {
+	b := make([]byte, 12+payloadLen)
+	b[0] = code
+	binary.BigEndian.PutUint16(b[4:6], uint16(x))
+	binary.BigEndian.PutUint16(b[6:8], uint16(y))
+	binary.BigEndian.PutUint16(b[8:10], uint16(width))
+	binary.BigEndian.PutUint16(b[10:12], uint16(height))
+	return Operation{Bytes: b, Increment: true}
+}
+
+func (o Operation) WithSequence(seq uint16) Operation {
+	clone := Operation{Bytes: append([]byte(nil), o.Bytes...), Increment: o.Increment}
+	binary.BigEndian.PutUint16(clone.Bytes[2:4], seq)
+	return clone
+}
+
+func Bounds(width, height int) Operation {
+	o := operation(opBounds, 0, 0, width, height, 8)
+	binary.BigEndian.PutUint16(o.Bytes[12:14], 0)
+	binary.BigEndian.PutUint16(o.Bytes[14:16], 0)
+	binary.BigEndian.PutUint16(o.Bytes[16:18], uint16(width))
+	binary.BigEndian.PutUint16(o.Bytes[18:20], uint16(height))
+	return o
+}
+
+func Fill(x, y, width, height int, c color.Color) Operation {
+	o := operation(opFill, x, y, width, height, 4)
+	r, g, b, _ := c.RGBA()
+	o.Bytes[12] = 0xFF
+	o.Bytes[13] = byte(b >> 8)
+	o.Bytes[14] = byte(g >> 8)
+	o.Bytes[15] = byte(r >> 8)
+	return o
+}
+
+func InvisibleCursor() Operation {
+	o := operation(opCursor, 1, 1, 16, 16, 72)
+	// Two colors use the ALP 0,B,G,R representation. Bitmap and mask stay zero.
+	o.Bytes[17] = 0xFF
+	o.Bytes[18] = 0xFF
+	o.Bytes[19] = 0xFF
+	return o
+}
+
+func Pad() Operation {
+	o := operation(opPad, 0, 1, 0xFFFF, 0xFFFF, 12)
+	o.Increment = false
+	for i := 12; i < len(o.Bytes); i++ {
+		o.Bytes[i] = 0xFF
+	}
+	return o
+}
+
+func BitmapRGB(img image.Image, rect image.Rectangle, dst image.Point) (Operation, error) {
+	if rect.Empty() || !rect.In(img.Bounds()) {
+		return Operation{}, fmt.Errorf("bitmap rectangle %v is outside image bounds %v", rect, img.Bounds())
+	}
+	width, height := rect.Dx(), rect.Dy()
+	stride := round4(width * 3)
+	o := operation(opBitmapRGB, dst.X, dst.Y, width, height, stride*height)
+
+	pos := 12
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		rowStart := pos
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			o.Bytes[pos] = byte(b >> 8)
+			o.Bytes[pos+1] = byte(g >> 8)
+			o.Bytes[pos+2] = byte(r >> 8)
+			pos += 3
+		}
+		pos = rowStart + stride
+	}
+	return o, nil
+}
+
+func round4(n int) int {
+	return (n + 3) &^ 3
+}

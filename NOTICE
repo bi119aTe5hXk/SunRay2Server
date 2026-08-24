@@ -1,0 +1,12 @@
+SunRay2Server
+
+This implementation is derived from protocol and display code in kOpenRay:
+https://github.com/classilla/kopenray
+
+kOpenRay is Copyright (C) 2019 Cameron Kaiser and Copyright (C) 2010
+jOpenRay, ILM Informatique, with additional contributors listed by the
+upstream project. This derived work is licensed under GPL-2.0-or-later.
+
+The software is experimental, uses unencrypted Sun Ray transport, and is
+intended only for an isolated, trusted LAN.
+

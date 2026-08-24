@@ -1,0 +1,6 @@
+/sunrayd
+/.cache/
+*.pcap
+*.pcapng
+.DS_Store
+
