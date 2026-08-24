@@ -17,16 +17,18 @@ import (
 
 	"sunray2server/internal/display"
 	"sunray2server/internal/server"
+	"sunray2server/internal/smartcard"
 )
 
 func main() {
 	var (
-		listen      = flag.String("listen", ":7009", "TCP authentication listen address")
-		imagePath   = flag.String("image", "", "PNG or JPEG to display; empty uses the generated test pattern")
-		width       = flag.Int("fallback-width", 1280, "screen width when startRes is absent")
-		height      = flag.Int("fallback-height", 1024, "screen height when startRes is absent")
-		packetDelay = flag.Duration("packet-delay", 200*time.Microsecond, "delay between UDP display packets")
-		debug       = flag.Bool("debug", false, "enable debug logging")
+		listen          = flag.String("listen", ":7009", "TCP authentication listen address")
+		imagePath       = flag.String("image", "", "PNG or JPEG to display; empty uses the generated test pattern")
+		width           = flag.Int("fallback-width", 1280, "screen width when startRes is absent")
+		height          = flag.Int("fallback-height", 1024, "screen height when startRes is absent")
+		packetDelay     = flag.Duration("packet-delay", 200*time.Microsecond, "delay between UDP display packets")
+		smartcardListen = flag.String("smartcard-listen", ":4120", "passive TCP smart-card probe listen address; empty disables it")
+		debug           = flag.Bool("debug", false, "enable debug logging")
 	)
 	flag.Parse()
 
@@ -60,8 +62,29 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := srv.Serve(ctx); err != nil {
-		logger.Error("server stopped", "error", err)
+
+	serviceCount := 1
+	results := make(chan error, 2)
+	go func() {
+		results <- srv.Serve(ctx)
+	}()
+	if *smartcardListen != "" {
+		serviceCount++
+		probe := &smartcard.Probe{ListenAddress: *smartcardListen, Logger: logger}
+		go func() {
+			results <- probe.Serve(ctx)
+		}()
+	}
+
+	var firstErr error
+	for range serviceCount {
+		if err := <-results; err != nil && firstErr == nil {
+			firstErr = err
+			stop()
+		}
+	}
+	if firstErr != nil {
+		logger.Error("service stopped", "error", firstErr)
 		os.Exit(1)
 	}
 }
