@@ -319,6 +319,12 @@ func TestExtendOperationSequence(t *testing.T) {
 	if !validNACKRange(65530, 5) {
 		t.Fatal("short wrapped NACK range was rejected")
 	}
+	if !validNACKRange(0, 11059) {
+		t.Fatal("full 16-bit NACK range was rejected")
+	}
+	if validNACKRange(0, operationSeqMod) {
+		t.Fatal("NACK range wider than the operation sequence space was accepted")
+	}
 }
 
 func TestFlushHistoryPreservesOperationSequence(t *testing.T) {
@@ -402,6 +408,20 @@ func TestResendStormClearsHistoryAndStartsCooldown(t *testing.T) {
 	}
 	if got := time.Unix(0, client.nackCooldownUntil.Load()); !got.After(now) {
 		t.Fatalf("cooldown deadline = %v, want after %v", got, now)
+	}
+}
+
+func TestLargeMissingNACKDoesNotTriggerFullFrameResync(t *testing.T) {
+	client := &Client{
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		opSeq:   11059,
+		history: make(map[uint32][]byte),
+	}
+	if client.resend(0, 0, 11059) {
+		t.Fatal("large missing NACK unexpectedly requested a full-frame resync")
+	}
+	if client.nackCooldownUntil.Load() != 0 {
+		t.Fatal("large missing NACK unexpectedly started a resend cooldown")
 	}
 }
 

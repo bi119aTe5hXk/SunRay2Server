@@ -67,6 +67,25 @@ func TestPointerReport(t *testing.T) {
 	}
 }
 
+func TestPointerReportDecodesSignedWheelDelta(t *testing.T) {
+	var decoder inputDecoder
+	operation := make([]byte, 12)
+	operation[0] = 0xC2
+	binary.BigEndian.PutUint16(operation[4:6], 0x0040)
+	binary.BigEndian.PutUint16(operation[6:8], 320)
+	binary.BigEndian.PutUint16(operation[8:10], 200)
+	binary.BigEndian.PutUint16(operation[10:12], uint16(1))
+	event, changed, err := decoder.pointer(operation)
+	if err != nil || !changed || event.Wheel != 1 {
+		t.Fatalf("wheel up event=%#v changed=%v err=%v", event, changed, err)
+	}
+	binary.BigEndian.PutUint16(operation[10:12], uint16(0xFFFF))
+	event, changed, err = decoder.pointer(operation)
+	if err != nil || !changed || event.Wheel != -1 {
+		t.Fatalf("wheel down event=%#v changed=%v err=%v", event, changed, err)
+	}
+}
+
 func TestRejectsShortInputOperations(t *testing.T) {
 	var decoder inputDecoder
 	if _, err := decoder.keyboard([]byte{0xC1}); err == nil {

@@ -16,8 +16,8 @@ import (
 const (
 	packetHeaderSize = 16
 	maxDatagramSize  = 1448
-	maxNACKRange     = 4096
-	maxResendBatch   = 256
+	maxNACKRange     = operationSeqMod
+	maxResendCharge  = 256
 	maxHistorySize   = 8192
 	nackOpenEnded    = 0x00FFFFFF
 	operationSeqMod  = 1 << 16
@@ -301,6 +301,11 @@ func (c *Client) handlePacket(packet []byte) {
 			}
 			if changed {
 				c.dispatchInput(event)
+			} else if c.logInputEvents {
+				// Keep the otherwise opaque C2 header visible during hardware
+				// diagnostics. Some firmware revisions place extra wheel data in
+				// fields that older jOpenRay code never interpreted.
+				c.log.Debug("unchanged pointer report", "raw", fmt.Sprintf("%x", packet[offset:offset+12]))
 			}
 			offset += 12
 		case 0xC4:
@@ -341,8 +346,9 @@ func (c *Client) dispatchInput(event InputEvent) {
 		return
 	}
 	now := time.Now()
-	if event.Buttons != c.lastPointerButtons || now.Sub(c.lastPointerLog) >= 250*time.Millisecond {
-		c.log.Debug("pointer input", "x", event.X, "y", event.Y, "buttons", fmt.Sprintf("0x%02x", event.Buttons))
+	if event.Buttons != c.lastPointerButtons || event.Wheel != 0 || now.Sub(c.lastPointerLog) >= 250*time.Millisecond {
+		c.log.Debug("pointer input", "x", event.X, "y", event.Y,
+			"buttons", fmt.Sprintf("0x%02x", event.Buttons), "wheel", event.Wheel)
 		c.lastPointerLog = now
 		c.lastPointerButtons = event.Buttons
 	}
@@ -443,10 +449,13 @@ func (c *Client) resend(marker, from, to uint32) bool {
 	var replay [][]byte
 	if from <= to && from <= c.opSeq {
 		to = min(to, c.opSeq)
-		if to-from+1 > maxResendBatch {
-			to = from + maxResendBatch - 1
-		}
-		if _, ok := c.history[from]; ok && c.recordResendLocked(time.Now(), int(to-from+1)) {
+		// A Sun Ray repeats the original range until it receives the complete
+		// replay and its 0xAC completion marker. Replay the whole contiguous
+		// range; limiting each request to a prefix makes it request that same
+		// prefix forever. Charge at most one batch to storm accounting so one
+		// legitimate large recovery cannot force a full-frame resync.
+		stormCharge := min(int(to-from+1), maxResendCharge)
+		if _, ok := c.history[from]; ok && c.recordResendLocked(time.Now(), stormCharge) {
 			return true
 		}
 		for seq := from; seq <= to; seq++ {

@@ -163,17 +163,66 @@ func (s *Session) HandleInput(event display.InputEvent) {
 		}
 		err = conn.sendKey(keysym, event.Pressed)
 	case display.InputPointer:
+		// Sun Ray reports wheel up/down as transient button bits 4 and 5.
+		// RFB requires each notch to be a complete press/release pulse. Sending
+		// the raw state through the movement coalescer can discard the press
+		// when the firmware's release arrives immediately afterwards.
+		baseButtons := event.Buttons & 0x07
+		wheelButtons := event.Buttons & 0x18
+		wheelDelta := event.Wheel
 		s.pointerMu.Lock()
-		buttonChanged := s.pointerSeen && event.Buttons != s.pointerButtons
+		buttonChanged := event.Buttons != s.pointerButtons
 		s.pointerSeen = true
-		s.pointerButtons = event.Buttons
-		if buttonChanged {
+		if wheelButtons != 0 || wheelDelta != 0 {
+			s.pointerButtons = baseButtons
+		} else {
+			s.pointerButtons = event.Buttons
+		}
+		if buttonChanged || wheelButtons != 0 || wheelDelta != 0 {
 			select {
 			case <-s.pointerEvents:
 			default:
 			}
 		}
 		s.pointerMu.Unlock()
+		if wheelButtons != 0 || wheelDelta != 0 {
+			for _, wheel := range []uint8{0x08, 0x10} {
+				if wheelButtons&wheel == 0 {
+					continue
+				}
+				pulse := event
+				pulse.Buttons = baseButtons | wheel
+				if err = s.sendPointer(conn, pulse); err != nil {
+					break
+				}
+				pulse.Buttons = baseButtons
+				if err = s.sendPointer(conn, pulse); err != nil {
+					break
+				}
+			}
+			// The final C2 field is a relative signed delta on newer firmware.
+			// Positive follows the USB/RFB convention (wheel up); cap malformed
+			// packets so one record cannot create an unbounded write burst.
+			steps := int(wheelDelta)
+			wheel := uint8(0x08)
+			if steps < 0 {
+				steps = -steps
+				wheel = 0x10
+			}
+			steps = min(steps, 16)
+			for range steps {
+				pulse := event
+				pulse.Buttons = baseButtons | wheel
+				if err = s.sendPointer(conn, pulse); err != nil {
+					break
+				}
+				pulse.Buttons = baseButtons
+				if err = s.sendPointer(conn, pulse); err != nil {
+					break
+				}
+			}
+			break
+		}
 		if buttonChanged {
 			err = s.sendPointer(conn, event)
 			break

@@ -25,6 +25,10 @@ type InputEvent struct {
 	X         uint16
 	Y         uint16
 	Buttons   uint8
+	// Wheel is a signed relative vertical wheel delta. Newer Sun Ray firmware
+	// reports it in the final int16 of the C2 pointer record instead of using
+	// the legacy button bits 0x08/0x10.
+	Wheel int16
 }
 
 type inputDecoder struct {
@@ -94,8 +98,9 @@ func (d *inputDecoder) pointer(operation []byte) (InputEvent, bool, error) {
 		X:       binary.BigEndian.Uint16(operation[6:8]),
 		Y:       binary.BigEndian.Uint16(operation[8:10]),
 		Buttons: buttons,
+		Wheel:   int16(binary.BigEndian.Uint16(operation[10:12])),
 	}
-	changed := !d.pointerSeen || event.X != d.pointerX || event.Y != d.pointerY || event.Buttons != d.pointerButtons
+	changed := !d.pointerSeen || event.X != d.pointerX || event.Y != d.pointerY || event.Buttons != d.pointerButtons || event.Wheel != 0
 	d.pointerSeen = true
 	d.pointerX, d.pointerY, d.pointerButtons = event.X, event.Y, event.Buttons
 	return event, changed, nil

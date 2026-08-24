@@ -23,6 +23,12 @@ registration is not connected yet. The two card states are detected as session
 slots. YAML routing can bind either state, an exact future card ID, or a specific
 terminal serial number to a `card-test`, VNC, SSH, or RDP session.
 
+Audio is not implemented yet. Standard RFB/VNC has no interoperable audio
+channel, and the current RDP helper does not request or capture redirected
+sound. Sun Ray hardware supports downstream audio through ALP, but adding it
+requires an audio capture/resampling pipeline and the still-experimental ALP
+audio packet format; video sessions are currently silent.
+
 ## Security
 
 The Sun Ray transport currently announces `encUpType=none` and

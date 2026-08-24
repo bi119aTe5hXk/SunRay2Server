@@ -80,6 +80,57 @@ func TestPointerMovementCoalescesButButtonChangeIsImmediate(t *testing.T) {
 	}
 }
 
+func TestWheelNotchIsImmediatePressReleasePulse(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	session := NewSession(Config{ScreenWidth: 1400, ScreenHeight: 1050})
+	session.current = &connection{Conn: clientSide, width: 1400, height: 1050}
+
+	done := make(chan struct{})
+	go func() {
+		session.HandleInput(display.InputEvent{Kind: display.InputPointer, X: 700, Y: 525, Buttons: 0x08})
+		close(done)
+	}()
+	pressed := readPointerMessage(t, serverSide)
+	released := readPointerMessage(t, serverSide)
+	<-done
+	if pressed[1] != 0x08 || released[1] != 0 {
+		t.Fatalf("wheel pulse = %x then %x, want button4 then release", pressed, released)
+	}
+
+	// Repeated firmware pulses must each create a new RFB notch even without
+	// an intervening pointer movement.
+	done = make(chan struct{})
+	go func() {
+		session.HandleInput(display.InputEvent{Kind: display.InputPointer, X: 700, Y: 525, Buttons: 0x10})
+		close(done)
+	}()
+	pressed = readPointerMessage(t, serverSide)
+	released = readPointerMessage(t, serverSide)
+	<-done
+	if pressed[1] != 0x10 || released[1] != 0 {
+		t.Fatalf("reverse wheel pulse = %x then %x, want button5 then release", pressed, released)
+	}
+
+	for _, test := range []struct {
+		delta int16
+		want  byte
+	}{{1, 0x08}, {-1, 0x10}} {
+		done = make(chan struct{})
+		go func() {
+			session.HandleInput(display.InputEvent{Kind: display.InputPointer, X: 700, Y: 525, Wheel: test.delta})
+			close(done)
+		}()
+		pressed = readPointerMessage(t, serverSide)
+		released = readPointerMessage(t, serverSide)
+		<-done
+		if pressed[1] != test.want || released[1] != 0 {
+			t.Fatalf("wheel delta %d pulse = %x then %x", test.delta, pressed, released)
+		}
+	}
+}
+
 func TestFrameDeliveryCoalescesUpdatesWhileDisplayIsBusy(t *testing.T) {
 	type deliveredFrame struct {
 		changed image.Rectangle
