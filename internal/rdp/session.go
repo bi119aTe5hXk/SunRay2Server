@@ -22,6 +22,8 @@ import (
 	"sunray2server/internal/vnc"
 )
 
+const xvfbStartupTimeout = 15 * time.Second
+
 type Config struct {
 	Hostname     string
 	Port         int
@@ -169,26 +171,24 @@ func x11vncArguments(displayName string, port int) []string {
 }
 
 func (s *Session) startXvfb(ctx context.Context, path, runtimeDir string, env []string, exits chan processExit) (string, error) {
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		return "", fmt.Errorf("create Xvfb display pipe: %w", err)
-	}
-	defer reader.Close()
-	arguments := []string{"-displayfd", "3", "-screen", "0", fmt.Sprintf("%dx%dx24", s.config.ScreenWidth, s.config.ScreenHeight), "-nolisten", "tcp"}
+	arguments := xvfbArguments(s.config.ScreenWidth, s.config.ScreenHeight)
 	command := exec.CommandContext(ctx, path, arguments...)
 	command.Env = env
 	command.Dir = runtimeDir
-	command.ExtraFiles = []*os.File{writer}
+	// Ask Xvfb to report its selected display on stdout. Using ExtraFiles and
+	// fd 3 works on a normal host but can lose the inherited descriptor when
+	// Docker itself runs inside another minimal container.
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("capture Xvfb display number: %w", err)
+	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
-		writer.Close()
 		return "", fmt.Errorf("capture Xvfb output: %w", err)
 	}
 	if err := command.Start(); err != nil {
-		writer.Close()
 		return "", fmt.Errorf("start Xvfb: %w", err)
 	}
-	writer.Close()
 	go s.logOutput("Xvfb", stderr)
 	go func() { exits <- processExit{name: "Xvfb", err: command.Wait()} }()
 
@@ -198,10 +198,10 @@ func (s *Session) startXvfb(ctx context.Context, path, runtimeDir string, env []
 	}
 	result := make(chan displayResult, 1)
 	go func() {
-		line, readErr := bufio.NewReader(reader).ReadString('\n')
+		line, readErr := bufio.NewReader(stdout).ReadString('\n')
 		result <- displayResult{value: strings.TrimSpace(line), err: readErr}
 	}()
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(xvfbStartupTimeout)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -209,7 +209,7 @@ func (s *Session) startXvfb(ctx context.Context, path, runtimeDir string, env []
 	case exit := <-exits:
 		return "", fmt.Errorf("%s exited before selecting a display: %v", exit.name, exit.err)
 	case <-timer.C:
-		return "", fmt.Errorf("Xvfb did not select a display within 5 seconds")
+		return "", fmt.Errorf("Xvfb did not select a display within %s", xvfbStartupTimeout)
 	case display := <-result:
 		if display.err != nil && display.value == "" {
 			return "", fmt.Errorf("read Xvfb display number: %w", display.err)
@@ -217,8 +217,13 @@ func (s *Session) startXvfb(ctx context.Context, path, runtimeDir string, env []
 		if _, err := strconv.Atoi(display.value); err != nil {
 			return "", fmt.Errorf("Xvfb returned invalid display number %q", display.value)
 		}
+		s.config.Logger.Debug("Xvfb display selected", "display", display.value)
 		return display.value, nil
 	}
+}
+
+func xvfbArguments(width, height int) []string {
+	return []string{"-displayfd", "1", "-screen", "0", fmt.Sprintf("%dx%dx24", width, height), "-nolisten", "tcp"}
 }
 
 func (s *Session) startProcess(ctx context.Context, name, path string, arguments, env []string, stdin io.Reader, exits chan<- processExit) error {

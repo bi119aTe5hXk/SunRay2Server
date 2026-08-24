@@ -3,6 +3,12 @@
 package rdp
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +39,37 @@ func TestX11VNCArgumentsEnableLowLatencyCopyRect(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("missing %q in %q", expected, joined)
 		}
+	}
+}
+
+func TestXvfbReportsSelectedDisplayOnStdout(t *testing.T) {
+	arguments := xvfbArguments(1400, 1050)
+	joined := strings.Join(arguments, " ")
+	for _, expected := range []string{"-displayfd 1", "-screen 0 1400x1050x24", "-nolisten tcp"} {
+		if !strings.Contains(joined, expected) {
+			t.Errorf("missing %q in %q", expected, joined)
+		}
+	}
+}
+
+func TestStartXvfbReadsDisplayNumberFromStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+	helper := filepath.Join(t.TempDir(), "fake-xvfb")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf '77\\n'\nsleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	session := NewSession(Config{ScreenWidth: 1400, ScreenHeight: 1050, Logger: logger})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	displayNumber, err := session.startXvfb(ctx, helper, t.TempDir(), os.Environ(), make(chan processExit, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if displayNumber != "77" {
+		t.Fatalf("display number = %q, want 77", displayNumber)
 	}
 }
 
