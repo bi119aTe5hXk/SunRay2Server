@@ -37,16 +37,22 @@ sessions:
   #   address: 192.168.30.11:5900
   #   password: another-password
 
-  # SSH and RDP are reserved session types. They validate now so routes can be
-  # prepared, but selecting one displays NOT IMPLEMENTED until its adapter is
-  # added (directly or through guacd).
+  # SSH is implemented with a PTY and framebuffer terminal. For a quick test,
+  # use an inline password and explicitly opt into insecure host-key handling.
+  # For normal use, replace that flag with known_hosts_file or host_key_sha256.
   # example-ssh:
   #   type: ssh
   #   hostname: 192.168.30.20
   #   port: 22
   #   username: user
+  #   password: change-me
+  #   insecure_ignore_host_key: true
+  #   # known_hosts_file: /run/secrets/ssh_known_hosts
+  #   # host_key_sha256: SHA256:replace-with-server-fingerprint
   #   private_key_file: /run/secrets/ssh_private_key
   #
+  # RDP remains reserved. Selecting it displays NOT IMPLEMENTED until its
+  # adapter is added (directly or through guacd).
   # example-rdp:
   #   type: rdp
   #   hostname: 192.168.30.30

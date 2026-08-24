@@ -18,11 +18,11 @@ milestone implements only enough of the kOpenRay-compatible protocol to:
 - passively capture the initial Sun Ray smart-card service traffic on TCP 4120
   and recognize valid ISO 7816 ATR byte strings when explicitly enabled.
 
-VNC is the first connected remote-session adapter. SSH, RDP and persistent card
+VNC and SSH are connected remote-session adapters. RDP and persistent card
 registration are not connected yet. The two card states are detected as session
 slots. YAML routing can bind either state, an exact future card ID, or a specific
-terminal serial number to a `card-test` or VNC session. SSH and RDP session
-definitions are reserved but their adapters are not implemented yet.
+terminal serial number to a `card-test`, VNC, or SSH session. RDP definitions
+are reserved but its adapter is not implemented yet.
 
 ## Security
 
@@ -39,6 +39,11 @@ secured tunnel. Each VNC session may use an inline `password` or its own
 `password_file`; classic VNC authentication still uses only the first eight
 password bytes.
 
+SSH transport is encrypted. SSH sessions require one explicit host-key policy:
+a `known_hosts_file`, a fixed `host_key_sha256` fingerprint, or the deliberately
+unsafe `insecure_ignore_host_key: true` test option. The unsafe option is never
+enabled implicitly.
+
 ## Build and test
 
 Go 1.23 or later is recommended.
@@ -50,12 +55,12 @@ make build
 ```
 
 The test suite includes byte-level operation encoding checks, ATR and HID input
-parsing, and a local UDP round trip which verifies packet sequencing, input
-dispatch and NACK retransmission.
+parsing, SSH keyboard/ANSI terminal rendering, and a local UDP round trip which
+verifies packet sequencing, input dispatch and NACK retransmission.
 
 ## Configuration
 
-Copy `config.yaml.template` to `config.yaml`, then adjust its VNC address and
+Copy `config.yaml.template` to `config.yaml`, then adjust its remote sessions and
 routing. Start the server with:
 
 ```sh
@@ -66,7 +71,7 @@ The configuration contains four sections:
 
 - `server`: authentication listener, fallback resolution, packet pacing and
   the optional smart-card probe;
-- `sessions`: named `card-test`, `vnc`, reserved `ssh`, or reserved `rdp`
+- `sessions`: named `card-test`, `vnc`, `ssh`, or reserved `rdp`
   definitions;
 - `routing.default`: fallback sessions for no card, an unknown physical card,
   and exact card IDs;
@@ -78,10 +83,10 @@ and card IDs is case-insensitive. With the currently observed all-zero physical
 card ID, insertion selects `card_present`; a future real ID can be placed under
 `cards` without changing the session definitions.
 
-Relative `image`, `password_file`, and `private_key_file` paths are resolved
-from the directory containing the YAML file. Unknown YAML fields, invalid
-session references and malformed addresses cause startup to fail instead of
-being silently ignored.
+Relative `image`, `password_file`, `private_key_file`, and `known_hosts_file`
+paths are resolved from the directory containing the YAML file. Unknown YAML
+fields, invalid session references and malformed addresses cause startup to
+fail instead of being silently ignored.
 
 Input event logging is disabled by default because raw pointer motion can
 produce hundreds of events per second. Enable it only for diagnostics:
@@ -131,6 +136,43 @@ sessions:
     type: card-test
     image: ./assets/diagnostics.png
 ```
+
+### SSH sessions
+
+The fastest trusted-LAN test uses password authentication and explicitly opts
+out of host-key verification:
+
+```yaml
+sessions:
+  test-ssh:
+    type: ssh
+    hostname: 192.168.30.20
+    port: 22
+    username: user
+    password: change-me
+    insecure_ignore_host_key: true
+
+routing:
+  default:
+    no_card: card-test
+    card_present: test-ssh
+```
+
+For normal use, remove `insecure_ignore_host_key` and configure exactly one of:
+
+```yaml
+known_hosts_file: ./secrets/ssh_known_hosts
+# or
+host_key_sha256: SHA256:replace-with-server-fingerprint
+```
+
+Authentication accepts one session-level `password` or `password_file`, an
+OpenSSH `private_key_file`, or both password and private key. If an encrypted
+private key is used, the configured password is also tried as its passphrase.
+The first terminal milestone requests an `xterm-256color` PTY, renders common
+ANSI cursor/erase/color sequences, and maps printable keys, arrows, navigation
+keys, F1-F12, and Ctrl/Alt combinations. Its built-in bitmap font currently
+renders ASCII plus a replacement glyph for other Unicode characters.
 
 ## Run
 
@@ -199,7 +241,7 @@ Linux Docker host:
 
 ```sh
 cp config.yaml.template config.yaml
-# Edit config.yaml for the VNC target and routing.
+# Edit config.yaml for the remote target and routing.
 SUNRAY_CONFIG=./config.yaml docker compose up --build
 ```
 
@@ -280,10 +322,16 @@ established. A successful connection then logs:
 VNC session connected ... server=192.168.30.10:5900 desktop=... resolution=(...,...)
 ```
 
-The session automatically reconnects after network or VNC server failures.
+The VNC session automatically reconnects after network or server failures.
 
-With `-debug`, keyboard and pointer activity should now produce structured
-lines such as:
+A successful SSH connection logs:
+
+```text
+SSH session connected ... server=192.168.30.20:22 username=user terminal=91x27
+```
+
+When `server.log_input_events` is enabled, keyboard and pointer activity
+produces structured lines such as:
 
 ```text
 keyboard input ... hid=0x04 pressed=true modifiers=0x00
@@ -334,6 +382,8 @@ firmware pairs them with the definitive next `insert` state.
 - A configured VNC desktop replaces the test image after connection.
 - Keyboard, pointer buttons, movement and wheel events reach the VNC server.
 - Restarting the VNC server causes an automatic reconnect without restarting `sunrayd`.
+- A configured SSH session displays a shell prompt and accepts text, arrow,
+  Enter, Backspace, Ctrl and Alt input.
 - Removing the card returns the panel to `READER READY` without restarting the server.
 - The generated test pattern is centered and has correct RGB colors.
 - No bands, stale regions or persistent corruption remain after retransmits.

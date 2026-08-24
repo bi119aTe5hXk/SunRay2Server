@@ -21,6 +21,7 @@ import (
 	"sunray2server/internal/auth"
 	appconfig "sunray2server/internal/config"
 	"sunray2server/internal/display"
+	"sunray2server/internal/sshclient"
 	"sunray2server/internal/vnc"
 )
 
@@ -340,12 +341,59 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 			}
 		}
 		s.startVNC(ctx, key, active, generation, definition.Address, password, logger)
-	case "ssh", "rdp":
+	case "ssh":
+		password, err := sessionPassword(definition)
+		if err != nil {
+			logger.Error("unable to load SSH password", "session", selection.session, "error", err)
+			return
+		}
+		address := net.JoinHostPort(definition.Hostname, strconv.Itoa(definition.Port))
+		connecting := display.CardStatusImage(s.config.Image, "SSH", address, "CONNECT")
+		if s.isCurrentSession(key, active.client, generation) {
+			if err := active.client.ShowImage(active.width, active.height, connecting); err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Warn("SSH connecting screen failed", "error", err)
+			}
+		}
+		s.startSSH(ctx, key, active, generation, definition, address, password, logger)
+	case "rdp":
 		unsupported := display.CardStatusImage(s.config.Image, strings.ToUpper(definition.Type), "NOT IMPLEMENTED", "STATUS")
 		if s.isCurrentSession(key, active.client, generation) {
 			_ = active.client.ShowImage(active.width, active.height, unsupported)
 		}
 		logger.Warn("session type is configured but not implemented", "session", selection.session, "type", definition.Type)
+	}
+}
+
+func (s *Server) startSSH(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, address, password string, logger *slog.Logger) {
+	session := sshclient.NewSession(sshclient.Config{
+		Address:               address,
+		Username:              definition.Username,
+		Password:              password,
+		PrivateKeyFile:        definition.PrivateKeyFile,
+		KnownHostsFile:        definition.KnownHostsFile,
+		HostKeySHA256:         definition.HostKeySHA256,
+		InsecureIgnoreHostKey: definition.InsecureIgnoreHostKey,
+		ScreenWidth:           active.width,
+		ScreenHeight:          active.height,
+		Logger:                logger,
+		OnFrame: func(frame *image.RGBA, changed []image.Rectangle, first bool) error {
+			if !s.isCurrentSession(key, active.client, generation) {
+				return context.Canceled
+			}
+			if first {
+				return active.client.ShowImage(active.width, active.height, frame)
+			}
+			for _, rectangle := range changed {
+				if err := active.client.ShowImageRegion(active.width, active.height, frame, rectangle); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	active.client.SetInputHandler(session.HandleInput)
+	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
+		logger.Warn("SSH session stopped", "server", address, "error", err)
 	}
 }
 

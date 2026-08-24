@@ -103,7 +103,7 @@ func TestStrictYAMLAndUnknownSessionReference(t *testing.T) {
 
 func TestReservedSSHAndRDPSessionsValidate(t *testing.T) {
 	cfg := Default()
-	cfg.Sessions["ssh"] = Session{Type: "ssh", Hostname: "server", Port: 22}
+	cfg.Sessions["ssh"] = Session{Type: "ssh", Hostname: "server", Port: 22, Username: "user", Password: "test", InsecureIgnoreHostKey: true}
 	cfg.Sessions["rdp"] = Session{Type: "rdp", Hostname: "desktop", Port: 3389}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -135,6 +135,21 @@ func TestDisplayOverrideRequiresCompletePair(t *testing.T) {
 	cfg.Server.DisplayHeight = 720
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSSHRequiresAuthenticationAndHostKeyPolicy(t *testing.T) {
+	cfg := Default()
+	cfg.Sessions["ssh"] = Session{Type: "ssh", Hostname: "server", Port: 22, Username: "user"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing SSH authentication and host-key policy to fail")
+	}
+	cfg.Sessions["ssh"] = Session{
+		Type: "ssh", Hostname: "server", Port: 22, Username: "user",
+		Password: "test", HostKeySHA256: "not-a-fingerprint",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected malformed SSH fingerprint to fail")
 	}
 }
 

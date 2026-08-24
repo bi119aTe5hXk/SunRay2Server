@@ -36,15 +36,18 @@ type Server struct {
 }
 
 type Session struct {
-	Type           string `yaml:"type"`
-	Address        string `yaml:"address,omitempty"`
-	Image          string `yaml:"image,omitempty"`
-	Hostname       string `yaml:"hostname,omitempty"`
-	Port           int    `yaml:"port,omitempty"`
-	Username       string `yaml:"username,omitempty"`
-	Password       string `yaml:"password,omitempty"`
-	PasswordFile   string `yaml:"password_file,omitempty"`
-	PrivateKeyFile string `yaml:"private_key_file,omitempty"`
+	Type                  string `yaml:"type"`
+	Address               string `yaml:"address,omitempty"`
+	Image                 string `yaml:"image,omitempty"`
+	Hostname              string `yaml:"hostname,omitempty"`
+	Port                  int    `yaml:"port,omitempty"`
+	Username              string `yaml:"username,omitempty"`
+	Password              string `yaml:"password,omitempty"`
+	PasswordFile          string `yaml:"password_file,omitempty"`
+	PrivateKeyFile        string `yaml:"private_key_file,omitempty"`
+	KnownHostsFile        string `yaml:"known_hosts_file,omitempty"`
+	HostKeySHA256         string `yaml:"host_key_sha256,omitempty"`
+	InsecureIgnoreHostKey bool   `yaml:"insecure_ignore_host_key,omitempty"`
 }
 
 type Routing struct {
@@ -129,6 +132,7 @@ func (c *Config) resolveRelativePaths(base string) {
 		session.Image = resolvePath(base, session.Image)
 		session.PasswordFile = resolvePath(base, session.PasswordFile)
 		session.PrivateKeyFile = resolvePath(base, session.PrivateKeyFile)
+		session.KnownHostsFile = resolvePath(base, session.KnownHostsFile)
 		c.Sessions[name] = session
 	}
 }
@@ -178,6 +182,33 @@ func (c *Config) Validate() error {
 			}
 			if session.Port < 1 || session.Port > 65535 {
 				return fmt.Errorf("session %q has invalid port %d", name, session.Port)
+			}
+			if session.Password != "" && session.PasswordFile != "" {
+				return fmt.Errorf("session %q cannot set both password and password_file", name)
+			}
+			if session.Type == "ssh" {
+				if strings.TrimSpace(session.Username) == "" {
+					return fmt.Errorf("session %q requires username", name)
+				}
+				hostKeyMethods := 0
+				if session.KnownHostsFile != "" {
+					hostKeyMethods++
+				}
+				if session.HostKeySHA256 != "" {
+					hostKeyMethods++
+				}
+				if session.InsecureIgnoreHostKey {
+					hostKeyMethods++
+				}
+				if hostKeyMethods != 1 {
+					return fmt.Errorf("session %q must set exactly one of known_hosts_file, host_key_sha256, or insecure_ignore_host_key", name)
+				}
+				if session.HostKeySHA256 != "" && !strings.HasPrefix(session.HostKeySHA256, "SHA256:") {
+					return fmt.Errorf("session %q host_key_sha256 must start with SHA256:", name)
+				}
+				if session.Password == "" && session.PasswordFile == "" && session.PrivateKeyFile == "" {
+					return fmt.Errorf("session %q requires password, password_file, or private_key_file", name)
+				}
 			}
 		default:
 			return fmt.Errorf("session %q has unsupported type %q", name, session.Type)
