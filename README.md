@@ -128,6 +128,37 @@ Alternatively, give each session a separate `password_file`. `password` and
 out of version control when it contains inline credentials; this repository's
 `.gitignore` already excludes it.
 
+Each VNC session independently selects its logical display resolution with
+`resolution_mode`:
+
+- `current` (default) uses the current server canvas after the global
+  `server.display_width/display_height` override.
+- `terminal` uses the original `startRes` reported by the Sun Ray, ignoring the
+  global override for this VNC session.
+- `vnc` follows the remote VNC framebuffer size and later DesktopSize changes.
+- `manual` uses the session's own `display_width` and `display_height`.
+
+For example:
+
+```yaml
+sessions:
+  native-vnc:
+    type: vnc
+    address: 192.168.30.10:5900
+    resolution_mode: vnc
+  fixed-vnc:
+    type: vnc
+    address: 192.168.30.11:5900
+    resolution_mode: manual
+    display_width: 1400
+    display_height: 1050
+```
+
+`current`, `terminal`, and `manual` limit framebuffer update requests to the
+selected visible area. `vnc` requests the complete remote framebuffer; choosing
+it for a desktop larger than the physical viewport may cause Sun Ray panning
+and substantially more network/display traffic.
+
 `card-test` is a normal session type and can optionally use its own PNG/JPEG:
 
 ```yaml

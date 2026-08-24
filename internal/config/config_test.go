@@ -137,6 +137,37 @@ func TestVNCPasswordSourcesArePerSessionAndMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestVNCResolutionModes(t *testing.T) {
+	for _, mode := range []string{VNCResolutionCurrent, VNCResolutionTerminal, VNCResolutionServer} {
+		cfg := Default()
+		cfg.Sessions["vnc"] = Session{Type: "vnc", Address: "server:5900", ResolutionMode: mode}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("mode %q: %v", mode, err)
+		}
+	}
+	cfg := Default()
+	cfg.Sessions["vnc"] = Session{
+		Type: "vnc", Address: "server:5900", ResolutionMode: VNCResolutionManual,
+		DisplayWidth: 1400, DisplayHeight: 1050,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := cfg.Sessions["vnc"]
+	invalid.ResolutionMode = VNCResolutionCurrent
+	cfg.Sessions["vnc"] = invalid
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected dimensions outside manual mode to fail")
+	}
+	invalid.ResolutionMode = "automatic"
+	invalid.DisplayWidth, invalid.DisplayHeight = 0, 0
+	cfg.Sessions["vnc"] = invalid
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unknown VNC resolution mode to fail")
+	}
+}
+
 func TestDisplayOverrideRequiresCompletePair(t *testing.T) {
 	cfg := Default()
 	cfg.Server.DisplayWidth = 1280

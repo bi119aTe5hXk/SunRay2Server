@@ -17,6 +17,13 @@ import (
 
 const CurrentVersion = 1
 
+const (
+	VNCResolutionCurrent  = "current"
+	VNCResolutionTerminal = "terminal"
+	VNCResolutionServer   = "vnc"
+	VNCResolutionManual   = "manual"
+)
+
 type Config struct {
 	Version  int                `yaml:"version"`
 	Server   Server             `yaml:"server"`
@@ -50,6 +57,9 @@ type Session struct {
 	InsecureIgnoreHostKey bool    `yaml:"insecure_ignore_host_key,omitempty"`
 	FontFile              string  `yaml:"font_file,omitempty"`
 	FontSize              float64 `yaml:"font_size,omitempty"`
+	ResolutionMode        string  `yaml:"resolution_mode,omitempty"`
+	DisplayWidth          int     `yaml:"display_width,omitempty"`
+	DisplayHeight         int     `yaml:"display_height,omitempty"`
 }
 
 type Routing struct {
@@ -119,6 +129,10 @@ func (c *Config) applyDefaults() {
 	}
 	for name, session := range c.Sessions {
 		session.Type = strings.ToLower(strings.TrimSpace(session.Type))
+		session.ResolutionMode = strings.ToLower(strings.TrimSpace(session.ResolutionMode))
+		if session.Type == "vnc" && session.ResolutionMode == "" {
+			session.ResolutionMode = VNCResolutionCurrent
+		}
 		if session.Type == "ssh" && session.Port == 0 {
 			session.Port = 22
 		}
@@ -181,6 +195,22 @@ func (c *Config) Validate() error {
 			}
 			if session.Password != "" && session.PasswordFile != "" {
 				return fmt.Errorf("session %q cannot set both password and password_file", name)
+			}
+			resolutionMode := session.ResolutionMode
+			if resolutionMode == "" {
+				resolutionMode = VNCResolutionCurrent
+			}
+			switch resolutionMode {
+			case VNCResolutionCurrent, VNCResolutionTerminal, VNCResolutionServer:
+				if session.DisplayWidth != 0 || session.DisplayHeight != 0 {
+					return fmt.Errorf("session %q may set display_width and display_height only with resolution_mode manual", name)
+				}
+			case VNCResolutionManual:
+				if session.DisplayWidth < 1 || session.DisplayWidth > 8192 || session.DisplayHeight < 1 || session.DisplayHeight > 8192 {
+					return fmt.Errorf("session %q has invalid manual display resolution %dx%d", name, session.DisplayWidth, session.DisplayHeight)
+				}
+			default:
+				return fmt.Errorf("session %q has invalid VNC resolution_mode %q", name, resolutionMode)
 			}
 		case "ssh", "rdp":
 			if strings.TrimSpace(session.Hostname) == "" {

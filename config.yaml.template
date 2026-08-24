@@ -32,6 +32,13 @@ sessions:
   example-vnc:
     type: vnc
     address: 192.168.30.10:5900
+    # current  = calibrated/global server display size (default)
+    # terminal = original startRes reported by the Sun Ray
+    # vnc      = native VNC framebuffer size, including later resizes
+    # manual   = this session's display_width/display_height below
+    resolution_mode: current
+    # display_width: 1400
+    # display_height: 1050
     # Passwords belong to each session, so multiple VNC sessions may use
     # different values. Leave both fields empty for Security None. For simple
     # private-LAN testing, uncomment the following line:

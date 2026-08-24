@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	appconfig "sunray2server/internal/config"
 )
 
 func TestParseResolution(t *testing.T) {
@@ -42,6 +44,27 @@ func TestConfiguredDisplayGeometryOverridesTerminalResolution(t *testing.T) {
 	}
 	if width != 1280 || height != 720 {
 		t.Fatalf("geometry = %dx%d", width, height)
+	}
+}
+
+func TestVNCDisplayGeometryModes(t *testing.T) {
+	active := activeDisplay{width: 1400, height: 1050, reportedWidth: 1920, reportedHeight: 1080}
+	tests := []struct {
+		definition appconfig.Session
+		mode       string
+		width      int
+		height     int
+	}{
+		{appconfig.Session{}, appconfig.VNCResolutionCurrent, 1400, 1050},
+		{appconfig.Session{ResolutionMode: appconfig.VNCResolutionTerminal}, appconfig.VNCResolutionTerminal, 1920, 1080},
+		{appconfig.Session{ResolutionMode: appconfig.VNCResolutionServer}, appconfig.VNCResolutionServer, 0, 0},
+		{appconfig.Session{ResolutionMode: appconfig.VNCResolutionManual, DisplayWidth: 1280, DisplayHeight: 720}, appconfig.VNCResolutionManual, 1280, 720},
+	}
+	for _, test := range tests {
+		mode, width, height := vncDisplayGeometry(active, test.definition)
+		if mode != test.mode || width != test.width || height != test.height {
+			t.Errorf("mode %q = %q %dx%d, want %q %dx%d", test.definition.ResolutionMode, mode, width, height, test.mode, test.width, test.height)
+		}
 	}
 }
 

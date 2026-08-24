@@ -47,14 +47,16 @@ type Server struct {
 }
 
 type activeDisplay struct {
-	client        *display.Client
-	width         int
-	height        int
-	ctx           context.Context
-	cancel        context.CancelFunc
-	sessionCancel context.CancelFunc
-	session       string
-	generation    uint64
+	client         *display.Client
+	width          int
+	height         int
+	reportedWidth  int
+	reportedHeight int
+	ctx            context.Context
+	cancel         context.CancelFunc
+	sessionCancel  context.CancelFunc
+	session        string
+	generation     uint64
 }
 
 type sessionSelection struct {
@@ -240,7 +242,8 @@ func (s *Server) startDisplay(ctx context.Context, key string, remoteIP net.IP, 
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("invalid terminal display port pn=%q", properties["pn"])
 	}
-	width, height := parseResolution(properties["startRes"], s.config.FallbackWidth, s.config.FallbackHeight)
+	reportedWidth, reportedHeight := parseResolution(properties["startRes"], s.config.FallbackWidth, s.config.FallbackHeight)
+	width, height := reportedWidth, reportedHeight
 	if s.config.DisplayWidth > 0 && s.config.DisplayHeight > 0 {
 		logger.Info("overriding terminal display geometry", "reported", fmt.Sprintf("%dx%d", width, height), "configured", fmt.Sprintf("%dx%d", s.config.DisplayWidth, s.config.DisplayHeight))
 		width, height = s.config.DisplayWidth, s.config.DisplayHeight
@@ -253,7 +256,11 @@ func (s *Server) startDisplay(ctx context.Context, key string, remoteIP net.IP, 
 	displayCtx, cancelDisplay := context.WithCancel(ctx)
 	s.mu.Lock()
 	old := s.active[key]
-	s.active[key] = activeDisplay{client: client, width: width, height: height, ctx: displayCtx, cancel: cancelDisplay}
+	s.active[key] = activeDisplay{
+		client: client, width: width, height: height,
+		reportedWidth: reportedWidth, reportedHeight: reportedHeight,
+		ctx: displayCtx, cancel: cancelDisplay,
+	}
 	selection, selected := s.selected[key]
 	s.mu.Unlock()
 	if old.sessionCancel != nil {
@@ -343,7 +350,7 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 				logger.Warn("VNC connecting screen failed", "error", err)
 			}
 		}
-		s.startVNC(ctx, key, active, generation, definition.Address, password, logger)
+		s.startVNC(ctx, key, active, generation, definition, password, logger)
 	case "ssh":
 		password, err := sessionPassword(definition)
 		if err != nil {
@@ -425,24 +432,30 @@ func sessionPassword(definition appconfig.Session) (string, error) {
 	return readSecret(definition.PasswordFile)
 }
 
-func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay, generation uint64, address, password string, logger *slog.Logger) {
+func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, password string, logger *slog.Logger) {
+	mode, screenWidth, screenHeight := vncDisplayGeometry(active, definition)
+	logger.Info("VNC display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight))
 	firstFrame := true
 	session := vnc.NewSession(vnc.Config{
-		Address:      address,
+		Address:      definition.Address,
 		Password:     password,
-		ScreenWidth:  active.width,
-		ScreenHeight: active.height,
+		ScreenWidth:  screenWidth,
+		ScreenHeight: screenHeight,
 		Logger:       logger,
 		OnFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
 			}
+			displayWidth, displayHeight := screenWidth, screenHeight
+			if mode == appconfig.VNCResolutionServer {
+				displayWidth, displayHeight = frame.Bounds().Dx(), frame.Bounds().Dy()
+			}
 			if firstFrame || resized {
 				firstFrame = false
-				return active.client.ShowImage(active.width, active.height, frame)
+				return active.client.ShowImage(displayWidth, displayHeight, frame)
 			}
 			for _, rectangle := range changed {
-				if err := active.client.ShowImageRegion(active.width, active.height, frame, rectangle); err != nil {
+				if err := active.client.ShowImageRegion(displayWidth, displayHeight, frame, rectangle); err != nil {
 					return err
 				}
 			}
@@ -451,6 +464,26 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 	})
 	active.client.SetInputHandler(session.HandleInput)
 	session.Run(ctx)
+}
+
+func vncDisplayGeometry(active activeDisplay, definition appconfig.Session) (string, int, int) {
+	switch definition.ResolutionMode {
+	case appconfig.VNCResolutionTerminal:
+		return definition.ResolutionMode, active.reportedWidth, active.reportedHeight
+	case appconfig.VNCResolutionServer:
+		return definition.ResolutionMode, 0, 0
+	case appconfig.VNCResolutionManual:
+		return definition.ResolutionMode, definition.DisplayWidth, definition.DisplayHeight
+	default:
+		return appconfig.VNCResolutionCurrent, active.width, active.height
+	}
+}
+
+func resolutionDescription(width, height int) string {
+	if width == 0 && height == 0 {
+		return "VNC framebuffer"
+	}
+	return fmt.Sprintf("%dx%d", width, height)
 }
 
 func (s *Server) isCurrentSession(key string, client *display.Client, generation uint64) bool {

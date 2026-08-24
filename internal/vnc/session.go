@@ -55,7 +55,12 @@ func (s *Session) Run(ctx context.Context) {
 		s.current = conn
 		s.mu.Unlock()
 		width, height := conn.size()
-		s.config.Logger.Info("VNC session connected", "server", s.config.Address, "desktop", desktop, "resolution", image.Pt(width, height))
+		displayWidth, displayHeight := s.config.ScreenWidth, s.config.ScreenHeight
+		if displayWidth == 0 || displayHeight == 0 {
+			displayWidth, displayHeight = width, height
+		}
+		s.config.Logger.Info("VNC session connected", "server", s.config.Address, "desktop", desktop,
+			"framebuffer_resolution", image.Pt(width, height), "display_resolution", image.Pt(displayWidth, displayHeight))
 
 		closed := make(chan struct{})
 		go func() {
@@ -116,8 +121,12 @@ func (s *Session) HandleInput(event display.InputEvent) {
 		err = conn.sendKey(keysym, event.Pressed)
 	case display.InputPointer:
 		width, height := conn.size()
-		x := translateCoordinate(int(event.X), s.config.ScreenWidth, width)
-		y := translateCoordinate(int(event.Y), s.config.ScreenHeight, height)
+		screenWidth, screenHeight := s.config.ScreenWidth, s.config.ScreenHeight
+		if screenWidth == 0 || screenHeight == 0 {
+			screenWidth, screenHeight = width, height
+		}
+		x := translateCoordinate(int(event.X), screenWidth, width)
+		y := translateCoordinate(int(event.Y), screenHeight, height)
 		err = conn.sendPointer(event.Buttons, uint16(x), uint16(y))
 	}
 	if err != nil {
