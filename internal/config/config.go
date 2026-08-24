@@ -22,6 +22,9 @@ const (
 	VNCResolutionTerminal = "terminal"
 	VNCResolutionServer   = "vnc"
 	VNCResolutionManual   = "manual"
+	RDPResolutionCurrent  = "current"
+	RDPResolutionTerminal = "terminal"
+	RDPResolutionManual   = "manual"
 )
 
 type Config struct {
@@ -49,6 +52,7 @@ type Session struct {
 	Hostname              string  `yaml:"hostname,omitempty"`
 	Port                  int     `yaml:"port,omitempty"`
 	Username              string  `yaml:"username,omitempty"`
+	Domain                string  `yaml:"domain,omitempty"`
 	Password              string  `yaml:"password,omitempty"`
 	PasswordFile          string  `yaml:"password_file,omitempty"`
 	PrivateKeyFile        string  `yaml:"private_key_file,omitempty"`
@@ -60,6 +64,7 @@ type Session struct {
 	ResolutionMode        string  `yaml:"resolution_mode,omitempty"`
 	DisplayWidth          int     `yaml:"display_width,omitempty"`
 	DisplayHeight         int     `yaml:"display_height,omitempty"`
+	Certificate           string  `yaml:"certificate,omitempty"`
 }
 
 type Routing struct {
@@ -130,6 +135,7 @@ func (c *Config) applyDefaults() {
 	for name, session := range c.Sessions {
 		session.Type = strings.ToLower(strings.TrimSpace(session.Type))
 		session.ResolutionMode = strings.ToLower(strings.TrimSpace(session.ResolutionMode))
+		session.Certificate = strings.TrimSpace(session.Certificate)
 		if session.Type == "vnc" && session.ResolutionMode == "" {
 			session.ResolutionMode = VNCResolutionCurrent
 		}
@@ -141,6 +147,12 @@ func (c *Config) applyDefaults() {
 		}
 		if session.Type == "rdp" && session.Port == 0 {
 			session.Port = 3389
+		}
+		if session.Type == "rdp" && session.ResolutionMode == "" {
+			session.ResolutionMode = RDPResolutionCurrent
+		}
+		if session.Type == "rdp" && strings.TrimSpace(session.Certificate) == "" {
+			session.Certificate = "deny"
 		}
 		c.Sessions[name] = session
 	}
@@ -248,6 +260,28 @@ func (c *Config) Validate() error {
 				if session.FontSize != 0 && (session.FontSize < 8 || session.FontSize > 72) {
 					return fmt.Errorf("session %q has invalid font_size %.1f (want 8 through 72)", name, session.FontSize)
 				}
+			} else {
+				if strings.TrimSpace(session.Username) == "" {
+					return fmt.Errorf("session %q requires username", name)
+				}
+				if session.Password == "" && session.PasswordFile == "" {
+					return fmt.Errorf("session %q requires password or password_file", name)
+				}
+				switch session.ResolutionMode {
+				case RDPResolutionCurrent, RDPResolutionTerminal:
+					if session.DisplayWidth != 0 || session.DisplayHeight != 0 {
+						return fmt.Errorf("session %q may set display_width and display_height only with resolution_mode manual", name)
+					}
+				case RDPResolutionManual:
+					if session.DisplayWidth < 1 || session.DisplayWidth > 8192 || session.DisplayHeight < 1 || session.DisplayHeight > 8192 {
+						return fmt.Errorf("session %q has invalid manual display resolution %dx%d", name, session.DisplayWidth, session.DisplayHeight)
+					}
+				default:
+					return fmt.Errorf("session %q has invalid RDP resolution_mode %q", name, session.ResolutionMode)
+				}
+				if !validRDPCertificatePolicy(session.Certificate) {
+					return fmt.Errorf("session %q has invalid RDP certificate policy %q", name, session.Certificate)
+				}
 			}
 		default:
 			return fmt.Errorf("session %q has unsupported type %q", name, session.Type)
@@ -268,6 +302,19 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("routing.default requires no_card and card_present")
 	}
 	return nil
+}
+
+func validRDPCertificatePolicy(policy string) bool {
+	lower := strings.ToLower(policy)
+	if lower == "deny" || lower == "ignore" || lower == "tofu" {
+		return true
+	}
+	for _, prefix := range []string{"name:", "fingerprint:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(policy[len(prefix):]) != ""
+		}
+	}
+	return false
 }
 
 func (c *Config) validateRoute(location string, route Route) error {

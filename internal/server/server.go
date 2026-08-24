@@ -22,6 +22,7 @@ import (
 	appconfig "sunray2server/internal/config"
 	"sunray2server/internal/display"
 	"sunray2server/internal/geometry"
+	"sunray2server/internal/rdp"
 	"sunray2server/internal/sshclient"
 	"sunray2server/internal/vnc"
 )
@@ -366,11 +367,19 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 		}
 		s.startSSH(ctx, key, active, generation, definition, address, password, logger)
 	case "rdp":
-		unsupported := display.CardStatusImage(s.config.Image, strings.ToUpper(definition.Type), "NOT IMPLEMENTED", "STATUS")
-		if s.isCurrentSession(key, active.client, generation) {
-			_ = active.client.ShowImage(active.width, active.height, unsupported)
+		password, err := sessionPassword(definition)
+		if err != nil {
+			logger.Error("unable to load RDP password", "session", selection.session, "error", err)
+			return
 		}
-		logger.Warn("session type is configured but not implemented", "session", selection.session, "type", definition.Type)
+		address := net.JoinHostPort(definition.Hostname, strconv.Itoa(definition.Port))
+		connecting := display.CardStatusImage(s.config.Image, "RDP", address, "CONNECT")
+		if s.isCurrentSession(key, active.client, generation) {
+			if err := active.client.ShowImage(active.width, active.height, connecting); err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Warn("RDP connecting screen failed", "error", err)
+			}
+		}
+		s.startRDP(ctx, key, active, generation, definition, password, logger)
 	}
 }
 
@@ -441,6 +450,7 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 		Password:     password,
 		ScreenWidth:  screenWidth,
 		ScreenHeight: screenHeight,
+		ScaleToFit:   mode != appconfig.VNCResolutionServer,
 		Logger:       logger,
 		OnFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
@@ -452,7 +462,10 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 			}
 			if firstFrame || resized {
 				firstFrame = false
-				return active.client.ShowImage(displayWidth, displayHeight, frame)
+				if err := active.client.ShowImage(displayWidth, displayHeight, frame); err != nil {
+					return err
+				}
+				return active.client.Send(display.LocalCursor())
 			}
 			for _, rectangle := range changed {
 				if err := active.client.ShowImageRegion(displayWidth, displayHeight, frame, rectangle); err != nil {
@@ -466,6 +479,45 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 	session.Run(ctx)
 }
 
+func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, password string, logger *slog.Logger) {
+	mode, screenWidth, screenHeight := rdpDisplayGeometry(active, definition)
+	address := net.JoinHostPort(definition.Hostname, strconv.Itoa(definition.Port))
+	logger.Info("RDP display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight))
+	firstFrame := true
+	session := rdp.NewSession(rdp.Config{
+		Hostname: definition.Hostname, Port: definition.Port,
+		Username: definition.Username, Domain: definition.Domain, Password: password,
+		Certificate: definition.Certificate, ScreenWidth: screenWidth, ScreenHeight: screenHeight,
+		Logger: logger,
+		OnFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
+			if !s.isCurrentSession(key, active.client, generation) {
+				return context.Canceled
+			}
+			if firstFrame || resized {
+				firstFrame = false
+				if err := active.client.ShowImage(screenWidth, screenHeight, frame); err != nil {
+					return err
+				}
+				return active.client.Send(display.LocalCursor())
+			}
+			for _, rectangle := range changed {
+				if err := active.client.ShowImageRegion(screenWidth, screenHeight, frame, rectangle); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	active.client.SetInputHandler(session.HandleInput)
+	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
+		logger.Warn("RDP session stopped", "server", address, "error", err)
+		if s.isCurrentSession(key, active.client, generation) {
+			failure := display.CardStatusImage(s.config.Image, "RDP ERROR", address, "CHECK LOG")
+			_ = active.client.ShowImage(active.width, active.height, failure)
+		}
+	}
+}
+
 func vncDisplayGeometry(active activeDisplay, definition appconfig.Session) (string, int, int) {
 	switch definition.ResolutionMode {
 	case appconfig.VNCResolutionTerminal:
@@ -476,6 +528,17 @@ func vncDisplayGeometry(active activeDisplay, definition appconfig.Session) (str
 		return definition.ResolutionMode, definition.DisplayWidth, definition.DisplayHeight
 	default:
 		return appconfig.VNCResolutionCurrent, active.width, active.height
+	}
+}
+
+func rdpDisplayGeometry(active activeDisplay, definition appconfig.Session) (string, int, int) {
+	switch definition.ResolutionMode {
+	case appconfig.RDPResolutionTerminal:
+		return definition.ResolutionMode, active.reportedWidth, active.reportedHeight
+	case appconfig.RDPResolutionManual:
+		return definition.ResolutionMode, definition.DisplayWidth, definition.DisplayHeight
+	default:
+		return appconfig.RDPResolutionCurrent, active.width, active.height
 	}
 }
 

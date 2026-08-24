@@ -32,10 +32,10 @@ sessions:
   example-vnc:
     type: vnc
     address: 192.168.30.10:5900
-    # current  = calibrated/global server display size (default)
-    # terminal = original startRes reported by the Sun Ray
+    # current  = fit the full VNC desktop into the calibrated/global size
+    # terminal = fit it into the original startRes reported by the Sun Ray
     # vnc      = native VNC framebuffer size, including later resizes
-    # manual   = this session's display_width/display_height below
+    # manual   = fit it into this session's display_width/display_height below
     resolution_mode: current
     # display_width: 1400
     # display_height: 1050
@@ -69,14 +69,23 @@ sessions:
   #   # host_key_sha256: SHA256:replace-with-server-fingerprint
   #   private_key_file: /run/secrets/ssh_private_key
   #
-  # RDP remains reserved. Selecting it displays NOT IMPLEMENTED until its
-  # adapter is added.
+  # RDP uses FreeRDP in an isolated virtual X display. The Docker image includes
+  # all helper programs; a native installation needs Xvfb, x11vnc and xfreerdp.
   # example-rdp:
   #   type: rdp
   #   hostname: 192.168.30.30
   #   port: 3389
   #   username: user
-  #   password_file: /run/secrets/rdp_password
+  #   # domain: WORKGROUP
+  #   password: change-me
+  #   # password_file: /run/secrets/rdp_password
+  #   # current, terminal, or manual (same meanings as the VNC modes above).
+  #   resolution_mode: current
+  #   # display_width: 1400
+  #   # display_height: 1050
+  #   # Secure default is deny. Many test servers use a self-signed certificate;
+  #   # use ignore only on a trusted LAN, or configure name:/fingerprint: instead.
+  #   certificate: ignore
 
 routing:
   # Current Sun Ray 2 behavior:

@@ -10,6 +10,13 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sunrayd ./cmd/sunrayd
 
 FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    freerdp2-x11 \
+    x11vnc \
+    xauth \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/sunrayd /usr/local/bin/sunrayd
 
 USER 65534:65534

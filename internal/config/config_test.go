@@ -112,12 +112,44 @@ func TestStrictYAMLAndUnknownSessionReference(t *testing.T) {
 	}
 }
 
-func TestReservedSSHAndRDPSessionsValidate(t *testing.T) {
+func TestSSHAndRDPSessionsValidate(t *testing.T) {
 	cfg := Default()
 	cfg.Sessions["ssh"] = Session{Type: "ssh", Hostname: "server", Port: 22, Username: "user", Password: "test", InsecureIgnoreHostKey: true}
-	cfg.Sessions["rdp"] = Session{Type: "rdp", Hostname: "desktop", Port: 3389}
+	cfg.Sessions["rdp"] = Session{Type: "rdp", Hostname: "desktop", Port: 3389, Username: "user", Password: "test", ResolutionMode: RDPResolutionCurrent, Certificate: "deny"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRDPDefaultsAndValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Sessions["rdp"] = Session{Type: "rdp", Hostname: "desktop", Username: "user", Password: "test"}
+	cfg.applyDefaults()
+	rdp := cfg.Sessions["rdp"]
+	if rdp.Port != 3389 || rdp.ResolutionMode != RDPResolutionCurrent || rdp.Certificate != "deny" {
+		t.Fatalf("unexpected RDP defaults: %#v", rdp)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rdp.ResolutionMode = RDPResolutionManual
+	rdp.DisplayWidth, rdp.DisplayHeight = 1400, 1050
+	rdp.Certificate = "fingerprint:sha256:example"
+	cfg.Sessions["rdp"] = rdp
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	rdp.Certificate = "accept-anything"
+	cfg.Sessions["rdp"] = rdp
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid RDP certificate policy to fail")
+	}
+	rdp.Certificate = "name:"
+	cfg.Sessions["rdp"] = rdp
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected empty RDP certificate name to fail")
 	}
 }
 

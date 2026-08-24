@@ -55,3 +55,19 @@ func TestResendDoneEncoding(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalCursorEncoding(t *testing.T) {
+	o := LocalCursor()
+	if len(o.Bytes) != 84 || o.Bytes[0] != opCursor {
+		t.Fatalf("unexpected cursor operation: length=%d opcode=%#x", len(o.Bytes), o.Bytes[0])
+	}
+	if got := binary.BigEndian.Uint16(o.Bytes[4:6]); got != 7 {
+		t.Fatalf("cursor hotspot x = %d, want 7", got)
+	}
+	if got := binary.BigEndian.Uint16(o.Bytes[6:8]); got != 7 {
+		t.Fatalf("cursor hotspot y = %d, want 7", got)
+	}
+	if got := o.Bytes[52:84]; got[0] != 0xF0 || got[31] != 0x0F {
+		t.Fatalf("unexpected cursor mask: %x", got)
+	}
+}

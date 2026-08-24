@@ -18,11 +18,10 @@ milestone implements only enough of the kOpenRay-compatible protocol to:
 - passively capture the initial Sun Ray smart-card service traffic on TCP 4120
   and recognize valid ISO 7816 ATR byte strings when explicitly enabled.
 
-VNC and SSH are connected remote-session adapters. RDP and persistent card
-registration are not connected yet. The two card states are detected as session
+VNC, SSH and RDP are connected remote-session adapters. Persistent card
+registration is not connected yet. The two card states are detected as session
 slots. YAML routing can bind either state, an exact future card ID, or a specific
-terminal serial number to a `card-test`, VNC, or SSH session. RDP definitions
-are reserved but its adapter is not implemented yet.
+terminal serial number to a `card-test`, VNC, SSH, or RDP session.
 
 ## Security
 
@@ -43,6 +42,13 @@ SSH transport is encrypted. SSH sessions require one explicit host-key policy:
 a `known_hosts_file`, a fixed `host_key_sha256` fingerprint, or the deliberately
 unsafe `insecure_ignore_host_key: true` test option. The unsafe option is never
 enabled implicitly.
+
+RDP transport and authentication are handled by FreeRDP. The adapter runs each
+RDP connection in its own Xvfb display and exports that framebuffer through an
+unauthenticated VNC listener bound only to loopback. The RDP password is supplied
+to FreeRDP through standard input, not a process argument. Certificate validation
+defaults to `deny`; use `ignore` only for controlled testing with a known
+self-signed server.
 
 ## Build and test
 
@@ -71,7 +77,7 @@ The configuration contains four sections:
 
 - `server`: authentication listener, fallback resolution, packet pacing and
   the optional smart-card probe;
-- `sessions`: named `card-test`, `geometry-test`, `vnc`, `ssh`, or reserved `rdp`
+- `sessions`: named `card-test`, `geometry-test`, `vnc`, `ssh`, or `rdp`
   definitions;
 - `routing.default`: fallback sessions for no card, an unknown physical card,
   and exact card IDs;
@@ -154,10 +160,13 @@ sessions:
     display_height: 1050
 ```
 
-`current`, `terminal`, and `manual` limit framebuffer update requests to the
-selected visible area. `vnc` requests the complete remote framebuffer; choosing
-it for a desktop larger than the physical viewport may cause Sun Ray panning
-and substantially more network/display traffic.
+`current`, `terminal`, and `manual` request the complete remote framebuffer and
+scale it proportionally into the selected canvas, adding black bars when the
+aspect ratios differ. Pointer coordinates are mapped back into the remote
+framebuffer. `vnc` keeps a native 1:1 framebuffer; choosing it for a desktop
+larger than the physical viewport may cause Sun Ray panning. Because the current
+RFB client uses Raw encoding, fitting a large remote framebuffer increases
+initial network traffic.
 
 `card-test` is a normal session type and can optionally use its own PNG/JPEG:
 
@@ -250,6 +259,45 @@ used by default. Set `font_file` to a monospace TTF, OTF, TTC, or OTC font when
 CJK, Powerline, or other glyph coverage is needed. `font_size` defaults to 20
 and accepts values from 8 through 72.
 
+### RDP sessions
+
+The quickest test with a typical self-signed Windows RDP certificate is:
+
+```yaml
+sessions:
+  test-rdp:
+    type: rdp
+    hostname: 192.168.30.30
+    port: 3389
+    username: user
+    password: change-me
+    resolution_mode: current
+    certificate: ignore
+
+routing:
+  default:
+    no_card: card-test
+    card_present: test-rdp
+```
+
+`resolution_mode` accepts `current`, `terminal`, or `manual`. `current` uses the
+calibrated/global canvas, `terminal` uses the original `startRes`, and `manual`
+requires session-level `display_width` and `display_height`. FreeRDP receives the
+same size and runs fullscreen inside that exact virtual display, so the RDP
+server should create a desktop matching the Sun Ray canvas without a second
+scaling pass.
+
+The `certificate` setting defaults to `deny`. It also accepts `tofu`, `ignore`,
+`name:<certificate-name>`, or `fingerprint:<hash>`. Prefer the strict default or
+a pinned identity outside initial trusted-LAN testing. `domain` is optional.
+As with VNC and SSH, `password` and `password_file` are per-session and mutually
+exclusive.
+
+The RDP adapter requires `Xvfb`, `x11vnc`, and either `xfreerdp3` or `xfreerdp`
+in `PATH`. They are already installed in the supplied Docker image. Native macOS
+builds can still run card-test, VNC, and SSH without these helpers; selecting an
+RDP session reports the missing executable in the log.
+
 ## Run
 
 With the built-in 640x360 test pattern:
@@ -284,8 +332,8 @@ The VNC client negotiates RFB 3.3, 3.7 or 3.8 and supports Security None,
 classic VNC authentication, Raw, CopyRect and DesktopSize. TLS/VeNCrypt and
 compressed encodings such as Tight, ZRLE and Hextile are not part of this first
 milestone. Configure the VNC server to permit one of the supported security
-types. A smaller VNC desktop is centered on the Sun Ray display; a larger one
-is cropped to the terminal resolution.
+types. The default `current` resolution mode proportionally fits the complete
+VNC desktop into the selected Sun Ray canvas.
 
 Useful flags:
 
@@ -345,8 +393,8 @@ implement file-backed secrets with bind mounts and ignore requested ownership
 metadata, so verify readability after changing its permissions. The `assets`
 directory is mounted at `/etc/sunray/assets` for optional card-test images and
 SSH terminal fonts. The local `config.yaml` and real secret files are excluded
-from the Docker build context. The runtime contains only the statically built
-server plus Debian slim.
+from the Docker build context. The Debian runtime also contains FreeRDP, Xvfb,
+and the loopback VNC bridge required by RDP sessions.
 
 Docker Desktop requires host networking to be enabled explicitly. Because its
 LAN source-address and UDP behavior can differ from native Linux, macOS hardware
@@ -407,6 +455,13 @@ A successful SSH connection logs:
 SSH session connected ... server=192.168.30.20:22 username=user terminal=91x27
 ```
 
+An RDP session first logs its helper stack and then the loopback VNC connection:
+
+```text
+RDP helper stack started ... server=192.168.30.30:3389 resolution=1400x1050
+VNC session connected ... server=127.0.0.1:... desktop=... framebuffer_resolution=(1400,1050)
+```
+
 When `server.log_input_events` is enabled, keyboard and pointer activity
 produces structured lines such as:
 
@@ -461,6 +516,8 @@ firmware pairs them with the definitive next `insert` state.
 - Restarting the VNC server causes an automatic reconnect without restarting `sunrayd`.
 - A configured SSH session displays a shell prompt and accepts text, arrow,
   Enter, Backspace, Ctrl and Alt input.
+- A configured RDP session reaches the Windows login/desktop at the selected
+  resolution and accepts pointer, button, wheel, and keyboard input.
 - Removing the card returns the panel to `READER READY` without restarting the server.
 - The generated test pattern is centered and has correct RGB colors.
 - No bands, stale regions or persistent corruption remain after retransmits.

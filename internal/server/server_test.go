@@ -68,6 +68,26 @@ func TestVNCDisplayGeometryModes(t *testing.T) {
 	}
 }
 
+func TestRDPDisplayGeometryModes(t *testing.T) {
+	active := activeDisplay{width: 1400, height: 1050, reportedWidth: 1920, reportedHeight: 1080}
+	tests := []struct {
+		definition appconfig.Session
+		mode       string
+		width      int
+		height     int
+	}{
+		{appconfig.Session{}, appconfig.RDPResolutionCurrent, 1400, 1050},
+		{appconfig.Session{ResolutionMode: appconfig.RDPResolutionTerminal}, appconfig.RDPResolutionTerminal, 1920, 1080},
+		{appconfig.Session{ResolutionMode: appconfig.RDPResolutionManual, DisplayWidth: 1280, DisplayHeight: 720}, appconfig.RDPResolutionManual, 1280, 720},
+	}
+	for _, test := range tests {
+		mode, width, height := rdpDisplayGeometry(active, test.definition)
+		if mode != test.mode || width != test.width || height != test.height {
+			t.Errorf("mode %q = %q %dx%d, want %q %dx%d", test.definition.ResolutionMode, mode, width, height, test.mode, test.width, test.height)
+		}
+	}
+}
+
 func TestCardSessionSlotUsesDefinitiveInsertEvents(t *testing.T) {
 	tests := []struct {
 		cardType string
