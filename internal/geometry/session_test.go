@@ -4,7 +4,6 @@ package geometry
 
 import (
 	"context"
-	"image"
 	"testing"
 	"time"
 
@@ -39,7 +38,7 @@ func TestSessionDrawsInitialAndAdjustedGeometry(t *testing.T) {
 	frames := make(chan capturedFrame, 2)
 	session := NewSession(Config{
 		Width: 1400, Height: 1050,
-		OnFrame: func(width, height, clearWidth, clearHeight int, _ *image.RGBA) error {
+		OnFrame: func(width, height, clearWidth, clearHeight int) error {
 			frames <- capturedFrame{width, height, clearWidth, clearHeight}
 			return nil
 		},

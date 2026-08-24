@@ -28,3 +28,10 @@ func TestGeometryTestImageUsesRequestedBoundsAndColoredEdges(t *testing.T) {
 		}
 	}
 }
+
+func TestGeometryLabelImageIsSmall(t *testing.T) {
+	result := GeometryLabelImage(1400, 1050)
+	if result.Bounds().Dx() > 400 || result.Bounds().Dy() > 100 {
+		t.Fatalf("label bounds = %v, want a small partial bitmap", result.Bounds())
+	}
+}

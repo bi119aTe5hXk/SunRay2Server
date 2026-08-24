@@ -17,6 +17,7 @@ const (
 	maxDatagramSize  = 1448
 	maxNACKRange     = 4096
 	maxHistorySize   = 8192
+	nackOpenEnded    = 0x00FFFFFF
 )
 
 type nackRange struct {
@@ -36,8 +37,8 @@ type Client struct {
 	renderMu           sync.Mutex
 	inputMu            sync.Mutex
 	packetSeq          uint16
-	opSeq              uint16
-	history            map[uint16][]byte
+	opSeq              uint32
+	history            map[uint32][]byte
 	nackRequests       chan nackRange
 	done               chan struct{}
 	closed             bool
@@ -74,7 +75,7 @@ func Open(remoteIP net.IP, remotePort int, delay time.Duration, logInputEvents b
 		delay:          delay,
 		log:            logger,
 		logInputEvents: logInputEvents,
-		history:        make(map[uint16][]byte),
+		history:        make(map[uint32][]byte),
 		nackRequests:   make(chan nackRange, 1),
 		done:           make(chan struct{}),
 	}
@@ -114,11 +115,11 @@ func (c *Client) Send(op Operation) error {
 	if op.Increment {
 		c.opSeq++
 	}
-	encoded := op.WithSequence(c.opSeq).Bytes
+	encoded := op.WithSequence(uint16(c.opSeq)).Bytes
 	if op.Increment {
 		c.history[c.opSeq] = append([]byte(nil), encoded...)
 		if len(c.history) > maxHistorySize {
-			delete(c.history, c.opSeq-uint16(maxHistorySize))
+			delete(c.history, c.opSeq-uint32(maxHistorySize))
 		}
 	}
 	return c.sendLocked(encoded)
@@ -250,7 +251,7 @@ func (c *Client) dispatchInput(event InputEvent) {
 }
 
 func (c *Client) queueResend(from, to uint32) {
-	if from > uint32(^uint16(0)) || to > uint32(^uint16(0)) || to < from || to-from+1 > maxNACKRange {
+	if from > nackOpenEnded || to > nackOpenEnded || to < from || to != nackOpenEnded && to-from+1 > maxNACKRange {
 		c.log.Warn("ignored invalid NACK range", "from", from, "to", to)
 		return
 	}
@@ -289,10 +290,17 @@ func (c *Client) resend(from, to uint32) {
 	if c.closed {
 		return
 	}
-	c.log.Debug("resending display operations", "from", from, "to", to)
+	requestedTo := to
+	if to == nackOpenEnded {
+		if from > c.opSeq {
+			return
+		}
+		to = c.opSeq
+	}
+	c.log.Debug("resending display operations", "from", from, "to", to, "requested_to", requestedTo)
 	resent := 0
 	for seq := from; seq <= to; seq++ {
-		encoded, ok := c.history[uint16(seq)]
+		encoded, ok := c.history[seq]
 		if !ok {
 			break
 		}
@@ -306,8 +314,8 @@ func (c *Client) resend(from, to uint32) {
 		c.log.Debug("display resend range is no longer in history", "from", from, "to", to)
 		return
 	}
-	pad := Pad().WithSequence(c.opSeq).Bytes
-	status := ResendDone(uint16(to)).WithSequence(c.opSeq).Bytes
+	pad := Pad().WithSequence(uint16(c.opSeq)).Bytes
+	status := ResendDone(uint16(requestedTo)).WithSequence(uint16(c.opSeq)).Bytes
 	// Pad and 0xAC form one completion message in the original protocol. If
 	// they are split across datagrams, or 0xAC consumes a new drawing sequence,
 	// the terminal can enter a self-sustaining resend loop.
@@ -318,5 +326,5 @@ func (c *Client) resend(from, to uint32) {
 		c.log.Warn("display resend completion failed", "error", err)
 		return
 	}
-	c.log.Debug("display operation resend complete", "from", from, "to", to, "resent", resent)
+	c.log.Debug("display operation resend complete", "from", from, "to", to, "requested_to", requestedTo, "resent", resent)
 }

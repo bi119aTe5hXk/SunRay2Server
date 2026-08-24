@@ -159,6 +159,56 @@ func TestNACKFromZeroIncludesAnchorAndCompletion(t *testing.T) {
 	}
 }
 
+func TestOperationSequenceExtendsAcrossWireWrap(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	client.mu.Lock()
+	client.opSeq = 65535
+	client.mu.Unlock()
+	if err := client.Send(Fill(1, 2, 3, 4, testColor{})); err != nil {
+		t.Fatal(err)
+	}
+	packet := readTestPacket(t, receiver)
+	if got := binary.BigEndian.Uint16(packet[packetHeaderSize+2 : packetHeaderSize+4]); got != 0 {
+		t.Fatalf("wrapped wire sequence = %d, want 0", got)
+	}
+	client.mu.Lock()
+	_, stored := client.history[65536]
+	extended := client.opSeq
+	client.mu.Unlock()
+	if !stored || extended != 65536 {
+		t.Fatalf("extended sequence = %d, stored=%v; want 65536,true", extended, stored)
+	}
+
+	nack := make([]byte, 32)
+	nack[packetHeaderSize] = 0xC4
+	binary.BigEndian.PutUint32(nack[24:28], 65536)
+	binary.BigEndian.PutUint32(nack[28:32], nackOpenEnded)
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: client.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
+		t.Fatal(err)
+	}
+	replayed := readTestPacket(t, receiver)
+	if got := replayed[packetHeaderSize]; got != opFill {
+		t.Fatalf("replayed opcode = %#x, want %#x", got, opFill)
+	}
+	completion := readTestPacket(t, receiver)
+	statusOffset := packetHeaderSize + len(Pad().Bytes)
+	if got := binary.BigEndian.Uint16(completion[statusOffset+18 : statusOffset+20]); got != 0xFFFF {
+		t.Fatalf("open-ended completion marker = %#x, want 0xffff", got)
+	}
+}
+
 type testColor struct{}
 
 func (testColor) RGBA() (uint32, uint32, uint32, uint32) { return 0x1111, 0x2222, 0x3333, 0xFFFF }

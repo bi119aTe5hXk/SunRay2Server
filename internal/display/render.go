@@ -63,6 +63,59 @@ func (c *Client) ShowCalibrationImage(width, height, clearWidth, clearHeight int
 	return c.sendBitmapTiles(img, img.Bounds(), image.Point{})
 }
 
+// ShowCalibrationTarget renders the live geometry target mostly with compact
+// ALP fill operations. A 1400x1050 raw RGB frame needs roughly 3,100 operation
+// packets, so repeated full-frame calibration updates quickly wrap the Sun Ray
+// operation sequence. Only the small central label remains a bitmap here.
+func (c *Client) ShowCalibrationTarget(width, height, clearWidth, clearHeight int) error {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	if width < 1 || height < 1 || clearWidth < width || clearHeight < height {
+		return fmt.Errorf("invalid calibration geometry %dx%d within %dx%d", width, height, clearWidth, clearHeight)
+	}
+
+	ops := []Operation{
+		Bounds(clearWidth, clearHeight),
+		Fill(0, 0, clearWidth, clearHeight, color.Black),
+		Bounds(width, height),
+		Fill(0, 0, width, height, geometryBackground),
+	}
+	for x := 50; x < width; x += 50 {
+		gridColor := geometryGrid
+		if x%100 == 0 {
+			gridColor = geometryMajorGrid
+		}
+		ops = append(ops, Fill(x, 0, 1, height, gridColor))
+	}
+	for y := 50; y < height; y += 50 {
+		gridColor := geometryGrid
+		if y%100 == 0 {
+			gridColor = geometryMajorGrid
+		}
+		ops = append(ops, Fill(0, y, width, 1, gridColor))
+	}
+	border := min(10, max(4, min(width, height)/100))
+	ops = append(ops,
+		Fill(0, 0, width, border, geometryTop),
+		Fill(width-border, 0, border, height, geometryRight),
+		Fill(0, height-border, width, border, geometryBottom),
+		Fill(0, 0, border, height, geometryLeft),
+		Fill(width/2-1, border, 2, height-border*2, color.RGBA{R: 130, G: 145, B: 165, A: 255}),
+		Fill(border, height/2-1, width-border*2, 2, color.RGBA{R: 130, G: 145, B: 165, A: 255}),
+		InvisibleCursor(),
+	)
+	for _, op := range ops {
+		if err := c.Send(op); err != nil {
+			return err
+		}
+	}
+
+	label := GeometryLabelImage(width, height)
+	labelBounds := label.Bounds()
+	destination := image.Pt((width-labelBounds.Dx())/2, (height-labelBounds.Dy())/2)
+	return c.sendBitmapTiles(label, labelBounds, destination)
+}
+
 func (c *Client) sendBitmapTiles(img image.Image, source image.Rectangle, destination image.Point) error {
 	tileWidth, tileHeight := bestTileSize(source.Dx(), source.Dy())
 	for y := 0; y < source.Dy(); y += tileHeight {

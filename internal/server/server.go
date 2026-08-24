@@ -370,11 +370,11 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 func (s *Server) startGeometryTest(ctx context.Context, key string, active activeDisplay, generation uint64, logger *slog.Logger) {
 	session := geometry.NewSession(geometry.Config{
 		Width: active.width, Height: active.height, Logger: logger,
-		OnFrame: func(width, height, clearWidth, clearHeight int, frame *image.RGBA) error {
+		OnFrame: func(width, height, clearWidth, clearHeight int) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
 			}
-			return active.client.ShowCalibrationImage(width, height, clearWidth, clearHeight, frame)
+			return active.client.ShowCalibrationTarget(width, height, clearWidth, clearHeight)
 		},
 	})
 	active.client.SetInputHandler(session.HandleInput)

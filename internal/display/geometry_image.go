@@ -87,6 +87,32 @@ func GeometryTestImage(width, height int) *image.RGBA {
 	return result
 }
 
+// GeometryLabelImage returns only the small dynamic label used by the live
+// calibration renderer. Keeping this separate avoids retransmitting a
+// multi-megabyte full-screen RGB bitmap after every arrow key press.
+func GeometryLabelImage(width, height int) *image.RGBA {
+	const scale = 3
+	lines := []string{"GEOMETRY TEST", fmt.Sprintf("%d X %d", width, height)}
+	labelWidth := 0
+	for _, line := range lines {
+		labelWidth = max(labelWidth, bitmapTextWidth(line, scale))
+	}
+	padding := 4 * scale
+	lineHeight := 9 * scale
+	result := image.NewRGBA(image.Rect(0, 0, labelWidth+padding*2, len(lines)*lineHeight+padding*2-2*scale))
+	fillRectangle(result, result.Bounds(), color.RGBA{R: 4, G: 7, B: 12, A: 255})
+	y := padding
+	for index, line := range lines {
+		lineColor := color.RGBA{R: 220, G: 230, B: 240, A: 255}
+		if index == 1 {
+			lineColor = color.RGBA{R: 255, G: 225, B: 90, A: 255}
+		}
+		drawBitmapText(result, (result.Bounds().Dx()-bitmapTextWidth(line, scale))/2, y, scale, line, lineColor)
+		y += lineHeight
+	}
+	return result
+}
+
 func fillRectangle(dst draw.Image, rectangle image.Rectangle, value color.Color) {
 	draw.Draw(dst, rectangle.Intersect(dst.Bounds()), image.NewUniform(value), image.Point{}, draw.Src)
 }

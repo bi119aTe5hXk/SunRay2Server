@@ -7,7 +7,6 @@ package geometry
 import (
 	"context"
 	"fmt"
-	"image"
 	"log/slog"
 
 	"sunray2server/internal/display"
@@ -31,7 +30,7 @@ type Config struct {
 	Width   int
 	Height  int
 	Logger  *slog.Logger
-	OnFrame func(width, height, clearWidth, clearHeight int, frame *image.RGBA) error
+	OnFrame func(width, height, clearWidth, clearHeight int) error
 }
 
 type Session struct {
@@ -93,7 +92,7 @@ func (s *Session) Run(ctx context.Context) error {
 }
 
 func (s *Session) draw(width, height, clearWidth, clearHeight int) error {
-	return s.config.OnFrame(width, height, clearWidth, clearHeight, display.GeometryTestImage(width, height))
+	return s.config.OnFrame(width, height, clearWidth, clearHeight)
 }
 
 func geometryKey(hid uint8) bool {
