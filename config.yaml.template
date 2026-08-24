@@ -22,6 +22,11 @@ sessions:
     # Optional PNG/JPEG. Relative paths are resolved from this config file.
     # image: ./assets/card-test.png
 
+  # Interactive viewport calibration. Route a card state to this session, then
+  # use the arrow keys until all four colored edges fit without panning.
+  geometry-test:
+    type: geometry-test
+
   example-vnc:
     type: vnc
     address: 192.168.30.10:5900
@@ -71,6 +76,8 @@ routing:
   default:
     no_card: card-test
     card_present: example-vnc
+    # For calibration, temporarily use:
+    # no_card: geometry-test
 
     # Exact IDs override card_present when the terminal can report a real ID.
     # cards:

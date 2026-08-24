@@ -180,7 +180,7 @@ func TestProjectTemplateLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sessions["card-test"].Type != "card-test" || cfg.Sessions["example-vnc"].Type != "vnc" {
+	if cfg.Sessions["card-test"].Type != "card-test" || cfg.Sessions["geometry-test"].Type != "geometry-test" || cfg.Sessions["example-vnc"].Type != "vnc" {
 		t.Fatalf("unexpected template sessions: %#v", cfg.Sessions)
 	}
 }

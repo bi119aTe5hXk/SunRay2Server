@@ -35,11 +35,40 @@ func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error
 	source = image.Rect(source.Min.X, source.Min.Y, source.Min.X+visibleWidth, source.Min.Y+visibleHeight)
 	destination := image.Pt((screenWidth-visibleWidth)/2, (screenHeight-visibleHeight)/2)
 
-	tileWidth, tileHeight := bestTileSize(visibleWidth, visibleHeight)
-	for y := 0; y < visibleHeight; y += tileHeight {
-		h := min(tileHeight, visibleHeight-y)
-		for x := 0; x < visibleWidth; x += tileWidth {
-			w := min(tileWidth, visibleWidth-x)
+	return c.sendBitmapTiles(img, source, destination)
+}
+
+// ShowCalibrationImage clears the largest geometry visited by an interactive
+// calibration before applying the new pointer bounds. This prevents old edge
+// markers from remaining visible when the candidate geometry is reduced.
+func (c *Client) ShowCalibrationImage(width, height, clearWidth, clearHeight int, img image.Image) error {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	if width < 1 || height < 1 || clearWidth < width || clearHeight < height {
+		return fmt.Errorf("invalid calibration geometry %dx%d within %dx%d", width, height, clearWidth, clearHeight)
+	}
+	if img == nil || img.Bounds().Empty() {
+		return fmt.Errorf("image is empty")
+	}
+	for _, op := range []Operation{
+		Bounds(clearWidth, clearHeight),
+		Fill(0, 0, clearWidth, clearHeight, color.Black),
+		Bounds(width, height),
+		InvisibleCursor(),
+	} {
+		if err := c.Send(op); err != nil {
+			return err
+		}
+	}
+	return c.sendBitmapTiles(img, img.Bounds(), image.Point{})
+}
+
+func (c *Client) sendBitmapTiles(img image.Image, source image.Rectangle, destination image.Point) error {
+	tileWidth, tileHeight := bestTileSize(source.Dx(), source.Dy())
+	for y := 0; y < source.Dy(); y += tileHeight {
+		h := min(tileHeight, source.Dy()-y)
+		for x := 0; x < source.Dx(); x += tileWidth {
+			w := min(tileWidth, source.Dx()-x)
 			rect := image.Rect(source.Min.X+x, source.Min.Y+y, source.Min.X+x+w, source.Min.Y+y+h)
 			op, err := BitmapRGB(img, rect, image.Pt(destination.X+x, destination.Y+y))
 			if err != nil {

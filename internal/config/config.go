@@ -174,7 +174,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("session name cannot be empty")
 		}
 		switch session.Type {
-		case "card-test":
+		case "card-test", "geometry-test":
 		case "vnc":
 			if _, _, err := net.SplitHostPort(session.Address); err != nil {
 				return fmt.Errorf("session %q has invalid VNC address %q: %w", name, session.Address, err)

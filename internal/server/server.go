@@ -21,6 +21,7 @@ import (
 	"sunray2server/internal/auth"
 	appconfig "sunray2server/internal/config"
 	"sunray2server/internal/display"
+	"sunray2server/internal/geometry"
 	"sunray2server/internal/sshclient"
 	"sunray2server/internal/vnc"
 )
@@ -325,6 +326,8 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 			return
 		}
 		logger.Info("card-test session displayed", "session", selection.session)
+	case "geometry-test":
+		s.startGeometryTest(ctx, key, active, generation, logger)
 	case "vnc":
 		password, err := sessionPassword(definition)
 		if err != nil {
@@ -361,6 +364,22 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 			_ = active.client.ShowImage(active.width, active.height, unsupported)
 		}
 		logger.Warn("session type is configured but not implemented", "session", selection.session, "type", definition.Type)
+	}
+}
+
+func (s *Server) startGeometryTest(ctx context.Context, key string, active activeDisplay, generation uint64, logger *slog.Logger) {
+	session := geometry.NewSession(geometry.Config{
+		Width: active.width, Height: active.height, Logger: logger,
+		OnFrame: func(width, height, clearWidth, clearHeight int, frame *image.RGBA) error {
+			if !s.isCurrentSession(key, active.client, generation) {
+				return context.Canceled
+			}
+			return active.client.ShowCalibrationImage(width, height, clearWidth, clearHeight, frame)
+		},
+	})
+	active.client.SetInputHandler(session.HandleInput)
+	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
+		logger.Warn("geometry-test session stopped", "error", err)
 	}
 }
 
