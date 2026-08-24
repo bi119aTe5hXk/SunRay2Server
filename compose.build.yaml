@@ -1,0 +1,7 @@
+services:
+  sunrayd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sunray2server:local
+    pull_policy: build

@@ -1,9 +1,7 @@
 services:
   sunrayd:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: sunray2server:local
+    image: ghcr.io/bi119ate5hxk/sunray2server:latest
+    pull_policy: always
     # Required for the Sun Ray's TCP control channel and dynamic bidirectional
     # UDP display channel. On Docker Desktop, first enable host networking in
     # Settings > Resources > Network, then Apply & Restart.

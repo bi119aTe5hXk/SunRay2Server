@@ -407,7 +407,32 @@ Linux Docker host:
 ```sh
 cp config.yaml.template config.yaml
 # Edit config.yaml for the remote target and routing.
-SUNRAY_CONFIG=./config.yaml docker compose up --build
+SUNRAY_CONFIG=./config.yaml docker compose up
+```
+
+The default Compose file pulls
+`ghcr.io/bi119ate5hxk/sunray2server:latest`. Every push to `main` publishes a
+new multi-platform image for `linux/amd64`, `linux/arm64`, and `linux/arm/v7`,
+plus an immutable `sha-<full-commit-sha>` tag. To deploy a particular revision,
+set `image` in `compose.yaml` to that SHA tag. The workflow can also be run
+manually from the GitHub Actions page.
+
+GHCR must allow the deployment host to read the package. Public packages can
+be pulled anonymously; for a private package, run `docker login ghcr.io` before
+starting Compose. After a new `main` build succeeds, recreate with the latest
+published image:
+
+```sh
+docker compose pull
+SUNRAY_CONFIG=./config.yaml docker compose up
+```
+
+For local development, overlay the build file so Compose builds the current
+checkout instead of pulling GHCR:
+
+```sh
+SUNRAY_CONFIG=./config.yaml \
+docker compose -f compose.yaml -f compose.build.yaml up --build
 ```
 
 For simple local testing, set `password` directly on each VNC session in
@@ -424,7 +449,7 @@ Point Compose at that source file when starting it:
 ```sh
 SUNRAY_CONFIG=./config.yaml \
 SUNRAY_VNC_PASSWORD_FILE=/absolute/path/to/vnc_password \
-docker compose up --build
+docker compose up
 ```
 
 Compose mounts the password read-only as `/run/secrets/vnc_password`. The image
@@ -446,7 +471,7 @@ Desktop restarts, recreate the container:
 
 ```sh
 docker compose down
-SUNRAY_CONFIG=./config.yaml docker compose up --build
+SUNRAY_CONFIG=./config.yaml docker compose up
 ```
 
 Confirm from the Mac that the authentication listener is reachable:
