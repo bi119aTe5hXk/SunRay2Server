@@ -307,15 +307,10 @@ func (c *Client) resend(from, to uint32) {
 		return
 	}
 	pad := Pad().WithSequence(c.opSeq).Bytes
-	c.opSeq++
 	status := ResendDone(uint16(to)).WithSequence(c.opSeq).Bytes
-	c.history[c.opSeq] = append([]byte(nil), status...)
-	if len(c.history) > maxHistorySize {
-		delete(c.history, c.opSeq-uint16(maxHistorySize))
-	}
 	// Pad and 0xAC form one completion message in the original protocol. If
-	// they are split across datagrams, the terminal can NACK the newly-created
-	// status sequence and enter a self-sustaining resend loop.
+	// they are split across datagrams, or 0xAC consumes a new drawing sequence,
+	// the terminal can enter a self-sustaining resend loop.
 	completion := make([]byte, 0, len(pad)+len(status))
 	completion = append(completion, pad...)
 	completion = append(completion, status...)

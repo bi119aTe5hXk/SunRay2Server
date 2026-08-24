@@ -45,6 +45,9 @@ func TestResendDoneEncoding(t *testing.T) {
 	if got := binary.BigEndian.Uint16(o.Bytes[2:4]); got != 9 {
 		t.Fatalf("sequence = %d, want 9", got)
 	}
+	if o.Increment {
+		t.Fatal("resend completion must not consume a drawing sequence")
+	}
 	want := []uint16{0, 1, 0, 0x1234}
 	for i, value := range want {
 		if got := binary.BigEndian.Uint16(o.Bytes[12+i*2 : 14+i*2]); got != value {

@@ -130,8 +130,32 @@ func TestNACKFromZeroIncludesAnchorAndCompletion(t *testing.T) {
 	if got := completion[statusOffset]; got != opResendDone {
 		t.Fatalf("completion status opcode = %#x, want %#x", got, opResendDone)
 	}
-	if got := binary.BigEndian.Uint16(completion[statusOffset+2 : statusOffset+4]); got != 2 {
-		t.Fatalf("completion status sequence = %d, want 2", got)
+	if got := binary.BigEndian.Uint16(completion[statusOffset+2 : statusOffset+4]); got != 1 {
+		t.Fatalf("completion status sequence = %d, want 1", got)
+	}
+	client.mu.Lock()
+	opSeq := client.opSeq
+	client.mu.Unlock()
+	if opSeq != 1 {
+		t.Fatalf("operation sequence advanced to %d after NACK, want 1", opSeq)
+	}
+
+	// Repeating the same NACK must not create another operation sequence. This
+	// is the regression case for the terminal/server resend feedback loop.
+	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
+		t.Fatal(err)
+	}
+	_ = readTestPacket(t, receiver) // Pad 0.
+	_ = readTestPacket(t, receiver) // Fill 1.
+	completion = readTestPacket(t, receiver)
+	if got := binary.BigEndian.Uint16(completion[statusOffset+2 : statusOffset+4]); got != 1 {
+		t.Fatalf("repeated completion status sequence = %d, want 1", got)
+	}
+	client.mu.Lock()
+	opSeq = client.opSeq
+	client.mu.Unlock()
+	if opSeq != 1 {
+		t.Fatalf("operation sequence advanced to %d after repeated NACK, want 1", opSeq)
 	}
 }
 

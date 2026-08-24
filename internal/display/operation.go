@@ -82,6 +82,9 @@ func Pad() Operation {
 // NACK response.
 func ResendDone(to uint16) Operation {
 	o := operation(opResendDone, 0, 0, 0, 0, 8)
+	// This is a transport acknowledgement, not a new drawing operation. Some
+	// Sun Ray 2 firmware NACKs a newly allocated status sequence forever.
+	o.Increment = false
 	binary.BigEndian.PutUint16(o.Bytes[12:14], 0)
 	binary.BigEndian.PutUint16(o.Bytes[14:16], 1)
 	binary.BigEndian.PutUint16(o.Bytes[16:18], 0)

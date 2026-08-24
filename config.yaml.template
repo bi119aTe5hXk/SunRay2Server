@@ -9,8 +9,10 @@ server:
   # Optional logical canvas override. This limits framebuffer/VNC traffic but
   # does not change the physical DVI timing selected by the Sun Ray firmware.
   # Set both values or leave both commented.
-  # display_width: 1280
-  # display_height: 720
+  # A Sun Ray 2 connected to a 1920x1080 monitor was measured as a 1400x1050
+  # usable viewport. Calibrate your own terminal before enabling an override.
+  # display_width: 1400
+  # display_height: 1050
   packet_delay: 200us
   smartcard_listen: ""
   # Disabled by default because pointer motion can generate hundreds of events.
