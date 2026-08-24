@@ -16,7 +16,13 @@ const (
 	packetHeaderSize = 16
 	maxDatagramSize  = 1448
 	maxNACKRange     = 4096
+	maxHistorySize   = 8192
 )
+
+type nackRange struct {
+	from uint32
+	to   uint32
+}
 
 // Client owns the bidirectional UDP display channel for one Sun Ray.
 type Client struct {
@@ -32,6 +38,8 @@ type Client struct {
 	packetSeq          uint16
 	opSeq              uint16
 	history            map[uint16][]byte
+	nackRequests       chan nackRange
+	done               chan struct{}
 	closed             bool
 	decoder            inputDecoder
 	onInput            func(InputEvent)
@@ -67,8 +75,14 @@ func Open(remoteIP net.IP, remotePort int, delay time.Duration, logInputEvents b
 		log:            logger,
 		logInputEvents: logInputEvents,
 		history:        make(map[uint16][]byte),
+		nackRequests:   make(chan nackRange, 1),
+		done:           make(chan struct{}),
 	}
+	// Sequence zero is a valid resend target even though normal drawing
+	// operations start at one. Keep a pad as the initial history anchor.
+	c.history[0] = Pad().WithSequence(0).Bytes
 	go c.readLoop()
+	go c.resendLoop()
 	return c, nil
 }
 
@@ -83,6 +97,7 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
+	close(c.done)
 	c.mu.Unlock()
 	return c.conn.Close()
 }
@@ -102,6 +117,9 @@ func (c *Client) Send(op Operation) error {
 	encoded := op.WithSequence(c.opSeq).Bytes
 	if op.Increment {
 		c.history[c.opSeq] = append([]byte(nil), encoded...)
+		if len(c.history) > maxHistorySize {
+			delete(c.history, c.opSeq-uint16(maxHistorySize))
+		}
 	}
 	return c.sendLocked(encoded)
 }
@@ -194,7 +212,7 @@ func (c *Client) handlePacket(packet []byte) {
 			}
 			from := binary.BigEndian.Uint32(packet[offset+8 : offset+12])
 			to := binary.BigEndian.Uint32(packet[offset+12 : offset+16])
-			c.resend(from, to)
+			c.queueResend(from, to)
 			return
 		case 0xC7:
 			// Rectangle/geometry report used during display setup.
@@ -231,25 +249,79 @@ func (c *Client) dispatchInput(event InputEvent) {
 	}
 }
 
-func (c *Client) resend(from, to uint32) {
-	if to < from || to-from+1 > maxNACKRange {
+func (c *Client) queueResend(from, to uint32) {
+	if from > uint32(^uint16(0)) || to > uint32(^uint16(0)) || to < from || to-from+1 > maxNACKRange {
 		c.log.Warn("ignored invalid NACK range", "from", from, "to", to)
 		return
 	}
-	c.log.Debug("resending display operations", "from", from, "to", to)
+	req := nackRange{from: from, to: to}
+	select {
+	case c.nackRequests <- req:
+		return
+	default:
+	}
+	// Keep only the newest pending request while a replay is in progress. This
+	// prevents repeated NACKs from building an unbounded replay backlog.
+	select {
+	case <-c.nackRequests:
+	default:
+	}
+	select {
+	case c.nackRequests <- req:
+	default:
+	}
+}
+
+func (c *Client) resendLoop() {
+	for {
+		select {
+		case req := <-c.nackRequests:
+			c.resend(req.from, req.to)
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *Client) resend(from, to uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return
 	}
+	c.log.Debug("resending display operations", "from", from, "to", to)
+	resent := 0
 	for seq := from; seq <= to; seq++ {
 		encoded, ok := c.history[uint16(seq)]
 		if !ok {
-			continue
+			break
 		}
 		if err := c.sendLocked(encoded); err != nil {
 			c.log.Warn("display resend failed", "sequence", seq, "error", err)
 			return
 		}
+		resent++
 	}
+	if resent == 0 {
+		c.log.Debug("display resend range is no longer in history", "from", from, "to", to)
+		return
+	}
+	pad := Pad().WithSequence(c.opSeq).Bytes
+	c.opSeq++
+	status := ResendDone(uint16(to)).WithSequence(c.opSeq).Bytes
+	c.history[c.opSeq] = append([]byte(nil), status...)
+	if len(c.history) > maxHistorySize {
+		delete(c.history, c.opSeq-uint16(maxHistorySize))
+	}
+	// Pad and 0xAC form one completion message in the original protocol. If
+	// they are split across datagrams, the terminal can NACK the newly-created
+	// status sequence and enter a self-sustaining resend loop.
+	completion := make([]byte, 0, len(pad)+len(status))
+	completion = append(completion, pad...)
+	completion = append(completion, status...)
+	if err := c.sendLocked(completion); err != nil {
+		c.log.Warn("display resend completion failed", "error", err)
+		return
+	}
+	c.log.Debug("display operation resend complete", "from", from, "to", to, "resent", resent)
 }

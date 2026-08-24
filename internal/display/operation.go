@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	opFill      = 0xA2
-	opBitmapRGB = 0xA6
-	opBounds    = 0xA8
-	opCursor    = 0xA9
-	opPad       = 0xAF
+	opResendDone = 0xAC
+	opFill       = 0xA2
+	opBitmapRGB  = 0xA6
+	opBounds     = 0xA8
+	opCursor     = 0xA9
+	opPad        = 0xAF
 )
 
 // Operation is one ALP display operation. The first 12 bytes are its header.
@@ -73,6 +74,18 @@ func Pad() Operation {
 	for i := 12; i < len(o.Bytes); i++ {
 		o.Bytes[i] = 0xFF
 	}
+	return o
+}
+
+// ResendDone tells the terminal that a requested operation range has been
+// replayed. Sun Ray servers send this after a pad operation at the end of a
+// NACK response.
+func ResendDone(to uint16) Operation {
+	o := operation(opResendDone, 0, 0, 0, 0, 8)
+	binary.BigEndian.PutUint16(o.Bytes[12:14], 0)
+	binary.BigEndian.PutUint16(o.Bytes[14:16], 1)
+	binary.BigEndian.PutUint16(o.Bytes[16:18], 0)
+	binary.BigEndian.PutUint16(o.Bytes[18:20], to)
 	return o
 }
 

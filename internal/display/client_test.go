@@ -80,6 +80,61 @@ func TestUDPSendAndNACKResend(t *testing.T) {
 	}
 }
 
+func TestNACKFromZeroIncludesAnchorAndCompletion(t *testing.T) {
+	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Send(Fill(1, 2, 3, 4, testColor{})); err != nil {
+		t.Fatal(err)
+	}
+	_ = readTestPacket(t, receiver)
+
+	nack := make([]byte, 32)
+	nack[packetHeaderSize] = 0xC4
+	binary.BigEndian.PutUint32(nack[24:28], 0)
+	binary.BigEndian.PutUint32(nack[28:32], 1)
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: client.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
+		t.Fatal(err)
+	}
+
+	wantCodes := []byte{opPad, opFill}
+	wantSeqs := []uint16{0, 1}
+	for i := range wantCodes {
+		packet := readTestPacket(t, receiver)
+		if got := packet[packetHeaderSize]; got != wantCodes[i] {
+			t.Fatalf("packet %d opcode = %#x, want %#x", i, got, wantCodes[i])
+		}
+		if got := binary.BigEndian.Uint16(packet[packetHeaderSize+2 : packetHeaderSize+4]); got != wantSeqs[i] {
+			t.Fatalf("packet %d sequence = %d, want %d", i, got, wantSeqs[i])
+		}
+	}
+	completion := readTestPacket(t, receiver)
+	padOffset := packetHeaderSize
+	statusOffset := padOffset + len(Pad().Bytes)
+	if got := completion[padOffset]; got != opPad {
+		t.Fatalf("completion pad opcode = %#x, want %#x", got, opPad)
+	}
+	if got := binary.BigEndian.Uint16(completion[padOffset+2 : padOffset+4]); got != 1 {
+		t.Fatalf("completion pad sequence = %d, want 1", got)
+	}
+	if got := completion[statusOffset]; got != opResendDone {
+		t.Fatalf("completion status opcode = %#x, want %#x", got, opResendDone)
+	}
+	if got := binary.BigEndian.Uint16(completion[statusOffset+2 : statusOffset+4]); got != 2 {
+		t.Fatalf("completion status sequence = %d, want 2", got)
+	}
+}
+
 type testColor struct{}
 
 func (testColor) RGBA() (uint32, uint32, uint32, uint32) { return 0x1111, 0x2222, 0x3333, 0xFFFF }

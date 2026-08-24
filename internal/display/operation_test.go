@@ -36,3 +36,19 @@ func TestBitmapRGBPadsRowsAndUsesBGR(t *testing.T) {
 		t.Fatalf("unexpected bitmap bytes: %x", got)
 	}
 }
+
+func TestResendDoneEncoding(t *testing.T) {
+	o := ResendDone(0x1234).WithSequence(9)
+	if len(o.Bytes) != 20 || o.Bytes[0] != opResendDone {
+		t.Fatalf("unexpected operation: %x", o.Bytes)
+	}
+	if got := binary.BigEndian.Uint16(o.Bytes[2:4]); got != 9 {
+		t.Fatalf("sequence = %d, want 9", got)
+	}
+	want := []uint16{0, 1, 0, 0x1234}
+	for i, value := range want {
+		if got := binary.BigEndian.Uint16(o.Bytes[12+i*2 : 14+i*2]); got != value {
+			t.Fatalf("payload word %d = %#x, want %#x", i, got, value)
+		}
+	}
+}
