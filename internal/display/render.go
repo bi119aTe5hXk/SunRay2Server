@@ -182,18 +182,26 @@ func (c *Client) ShowImageRegion(screenWidth, screenHeight int, img image.Image,
 }
 
 func bestTileSize(width, height int) (int, int) {
-	bestW, bestH := 1, 1
-	bestPackets := width * height
-	maxWidth := min(width, maxRGBPayload/3)
-	for w := 1; w <= maxWidth; w++ {
-		h := max(1, maxRGBPayload/round4(w*3))
-		h = min(h, height)
-		packets := (width + w - 1) / w * ((height + h - 1) / h)
-		if packets < bestPackets || packets == bestPackets && w > bestW {
-			bestW, bestH, bestPackets = w, h, packets
+	if width < 1024 {
+		bestW, bestH := 1, 1
+		bestPackets := width * height
+		maxWidth := min(width, maxRGBPayload/3)
+		for w := 1; w <= maxWidth; w++ {
+			h := min(height, max(1, maxRGBPayload/round4(w*3)))
+			packets := (width + w - 1) / w * ((height + h - 1) / h)
+			if packets < bestPackets || packets == bestPackets && w > bestW {
+				bestW, bestH, bestPackets = w, h, packets
+			}
 		}
+		return bestW, bestH
 	}
-	return bestW, bestH
+	// Prefer the widest possible horizontal strips. The previous packet-count
+	// optimizer selected roughly square tiles, making a full refresh visibly
+	// appear as a grid. Scanline-oriented strips use almost the same number of
+	// packets but produce a much less distracting top-to-bottom sweep.
+	tileWidth := min(width, maxRGBPayload/3)
+	tileHeight := min(height, max(1, maxRGBPayload/round4(tileWidth*3)))
+	return tileWidth, tileHeight
 }
 
 func TestPattern(width, height int) image.Image {

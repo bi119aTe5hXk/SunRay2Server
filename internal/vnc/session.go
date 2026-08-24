@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"image/draw"
 	"log/slog"
 	"net"
 	"sync"
@@ -37,17 +38,27 @@ type Session struct {
 	pointerSeen    bool
 	pointerButtons uint8
 	pointerEvents  chan display.InputEvent
+	frameMu        sync.Mutex
+	latestFrame    *image.RGBA
+	pendingChanged []image.Rectangle
+	pendingResized bool
+	frameWake      chan struct{}
 }
 
 func NewSession(config Config) *Session {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Session{config: config, pointerEvents: make(chan display.InputEvent, 1)}
+	return &Session{
+		config:        config,
+		pointerEvents: make(chan display.InputEvent, 1),
+		frameWake:     make(chan struct{}, 1),
+	}
 }
 
 func (s *Session) Run(ctx context.Context) {
 	go s.pointerLoop(ctx)
+	go s.frameLoop(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -210,10 +221,7 @@ func (s *Session) sendPointer(conn *connection, event display.InputEvent) error 
 
 func (s *Session) handleFrame(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
 	if !s.config.ScaleToFit {
-		if s.config.OnFrame == nil {
-			return nil
-		}
-		return s.config.OnFrame(frame, changed, resized)
+		return s.enqueueFrame(frame, changed, resized)
 	}
 	s.scaleMu.Lock()
 	defer s.scaleMu.Unlock()
@@ -224,10 +232,97 @@ func (s *Session) handleFrame(frame *image.RGBA, changed []image.Rectangle, resi
 		s.sourceSize = sourceSize
 	}
 	mapped := scaleFramebuffer(s.scaled, frame, changed, full)
-	if s.config.OnFrame == nil || len(mapped) == 0 {
+	if len(mapped) == 0 {
 		return nil
 	}
-	return s.config.OnFrame(s.scaled, mapped, full)
+	return s.enqueueFrame(s.scaled, mapped, full)
+}
+
+// enqueueFrame copies new pixels into an owned latest-frame buffer and returns
+// immediately. The RFB reader can therefore continue consuming updates while
+// the slower Sun Ray UDP path is drawing the previous one.
+func (s *Session) enqueueFrame(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
+	if s.config.OnFrame == nil || frame == nil || len(changed) == 0 {
+		return nil
+	}
+	s.frameMu.Lock()
+	if s.latestFrame == nil || s.latestFrame.Bounds() != frame.Bounds() {
+		s.latestFrame = image.NewRGBA(frame.Bounds())
+		s.pendingChanged = nil
+		changed = []image.Rectangle{frame.Bounds()}
+		resized = true
+	}
+	for _, rectangle := range changed {
+		rectangle = rectangle.Intersect(frame.Bounds())
+		if rectangle.Empty() {
+			continue
+		}
+		draw.Draw(s.latestFrame, rectangle, frame, rectangle.Min, draw.Src)
+		s.pendingChanged = appendChangedRectangle(s.pendingChanged, rectangle, frame.Bounds())
+	}
+	s.pendingResized = s.pendingResized || resized
+	s.frameMu.Unlock()
+	select {
+	case s.frameWake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// frameLoop sends only the newest accumulated framebuffer state. Intermediate
+// RDP/VNC updates are coalesced while a Sun Ray refresh is in progress instead
+// of being replayed seconds later as stale UI frames.
+func (s *Session) frameLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.frameWake:
+		}
+
+		s.frameMu.Lock()
+		changed := append([]image.Rectangle(nil), s.pendingChanged...)
+		resized := s.pendingResized
+		if len(changed) == 0 || s.latestFrame == nil {
+			s.frameMu.Unlock()
+			continue
+		}
+		snapshot := image.NewRGBA(s.latestFrame.Bounds())
+		for _, rectangle := range changed {
+			draw.Draw(snapshot, rectangle, s.latestFrame, rectangle.Min, draw.Src)
+		}
+		s.pendingChanged = nil
+		s.pendingResized = false
+		s.frameMu.Unlock()
+
+		if err := s.config.OnFrame(snapshot, changed, resized); err != nil && ctx.Err() == nil {
+			s.config.Logger.Debug("VNC framebuffer delivery failed", "error", err)
+		}
+	}
+}
+
+func appendChangedRectangle(rectangles []image.Rectangle, changed, bounds image.Rectangle) []image.Rectangle {
+	const mergeDistance = 8
+	changed = changed.Intersect(bounds)
+	if changed.Empty() {
+		return rectangles
+	}
+	for i := 0; i < len(rectangles); {
+		nearby := rectangles[i].Inset(-mergeDistance).Intersect(bounds)
+		if nearby.Overlaps(changed) {
+			changed = changed.Union(rectangles[i])
+			rectangles = append(rectangles[:i], rectangles[i+1:]...)
+			i = 0
+			continue
+		}
+		i++
+	}
+	// Guard against pathological rectangle streams without turning the normal
+	// mouse/caret case into one large bounding box.
+	if len(rectangles) >= 127 {
+		return []image.Rectangle{bounds}
+	}
+	return append(rectangles, changed)
 }
 
 func translateCoordinate(value, screenSize, framebufferSize int) int {

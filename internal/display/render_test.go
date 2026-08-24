@@ -18,6 +18,9 @@ func TestBestTileSizeFitsDatagram(t *testing.T) {
 	if w < 1 || h < 1 {
 		t.Fatalf("invalid tile %dx%d", w, h)
 	}
+	if h != 1 {
+		t.Fatalf("large framebuffer tile height = %d, want scanline strips", h)
+	}
 }
 
 func TestChangedRegionClippingGeometry(t *testing.T) {

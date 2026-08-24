@@ -204,8 +204,8 @@ func TestOperationSequenceExtendsAcrossWireWrap(t *testing.T) {
 	}
 	completion := readTestPacket(t, receiver)
 	statusOffset := packetHeaderSize + len(Pad().Bytes)
-	if got := binary.BigEndian.Uint16(completion[statusOffset+18 : statusOffset+20]); got != 0xFFFF {
-		t.Fatalf("open-ended completion marker = %#x, want 0xffff", got)
+	if got := binary.BigEndian.Uint16(completion[statusOffset+18 : statusOffset+20]); got != 0 {
+		t.Fatalf("open-ended completion watermark = %#x, want replayed sequence 0", got)
 	}
 }
 

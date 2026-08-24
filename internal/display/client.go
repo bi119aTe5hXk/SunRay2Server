@@ -16,6 +16,7 @@ const (
 	packetHeaderSize = 16
 	maxDatagramSize  = 1448
 	maxNACKRange     = 4096
+	maxResendBatch   = 256
 	maxHistorySize   = 8192
 	nackOpenEnded    = 0x00FFFFFF
 	operationSeqMod  = 1 << 16
@@ -357,8 +358,12 @@ func (c *Client) resend(marker, from, to uint32) {
 		}
 	}
 	resent := 0
+	lastResent := uint32(0)
 	if from <= to && from <= c.opSeq {
 		to = min(to, c.opSeq)
+		if to-from+1 > maxResendBatch {
+			to = from + maxResendBatch - 1
+		}
 		for seq := from; seq <= to; seq++ {
 			encoded, ok := c.history[seq]
 			if !ok {
@@ -369,6 +374,7 @@ func (c *Client) resend(marker, from, to uint32) {
 				return
 			}
 			resent++
+			lastResent = seq
 		}
 	}
 	if resent == 0 {
@@ -381,7 +387,10 @@ func (c *Client) resend(marker, from, to uint32) {
 	}
 	c.log.Debug("resending display operations", "marker", marker, "from", from, "to", to, "requested_from", requestedFrom, "requested_to", requestedTo)
 	pad := Pad().WithSequence(uint16(c.opSeq)).Bytes
-	status := ResendDone(uint16(requestedTo)).WithSequence(uint16(c.opSeq)).Bytes
+	// Report the actual replay watermark. For an open-ended or future request,
+	// echoing 0xffff/requestedTo makes the terminal restart from the same
+	// beginning indefinitely even though only the current prefix was sent.
+	status := ResendDone(uint16(lastResent)).WithSequence(uint16(c.opSeq)).Bytes
 	// Pad and 0xAC form one completion message in the original protocol. If
 	// they are split across datagrams, or 0xAC consumes a new drawing sequence,
 	// the terminal can enter a self-sustaining resend loop.
@@ -392,7 +401,7 @@ func (c *Client) resend(marker, from, to uint32) {
 		c.log.Warn("display resend completion failed", "error", err)
 		return
 	}
-	c.log.Debug("display operation resend complete", "marker", marker, "from", from, "to", to, "requested_from", requestedFrom, "requested_to", requestedTo, "resent", resent)
+	c.log.Debug("display operation resend complete", "marker", marker, "from", from, "to", to, "watermark", lastResent, "requested_from", requestedFrom, "requested_to", requestedTo, "resent", resent)
 }
 
 func (c *Client) logMissingNACKLocked(marker, from, to, requestedFrom, requestedTo uint32) {
