@@ -27,7 +27,7 @@ func main() {
 		width           = flag.Int("fallback-width", 1280, "screen width when startRes is absent")
 		height          = flag.Int("fallback-height", 1024, "screen height when startRes is absent")
 		packetDelay     = flag.Duration("packet-delay", 200*time.Microsecond, "delay between UDP display packets")
-		smartcardListen = flag.String("smartcard-listen", ":4120", "passive TCP smart-card probe listen address; empty disables it")
+		smartcardListen = flag.String("smartcard-listen", "", "passive TCP smart-card probe listen address; empty disables it")
 		debug           = flag.Bool("debug", false, "enable debug logging")
 	)
 	flag.Parse()

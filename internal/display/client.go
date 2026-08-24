@@ -27,10 +27,22 @@ type Client struct {
 
 	mu        sync.Mutex
 	renderMu  sync.Mutex
+	inputMu   sync.Mutex
 	packetSeq uint16
 	opSeq     uint16
 	history   map[uint16][]byte
 	closed    bool
+	decoder   inputDecoder
+	onInput   func(InputEvent)
+}
+
+// SetInputHandler installs the consumer used by a future SSH, VNC or RDP
+// adapter. Passing nil keeps decoding and debug logging enabled without
+// forwarding events.
+func (c *Client) SetInputHandler(handler func(InputEvent)) {
+	c.inputMu.Lock()
+	c.onInput = handler
+	c.inputMu.Unlock()
 }
 
 func Open(remoteIP net.IP, remotePort int, delay time.Duration, logger *slog.Logger) (*Client, error) {
@@ -136,20 +148,70 @@ func (c *Client) handlePacket(packet []byte) {
 		return
 	}
 
-	// C4 is the terminal's negative acknowledgement operation. Its second
-	// and third 32-bit values identify the missing display operation range.
-	for offset := packetHeaderSize; offset+16 <= len(packet); {
+	for offset := packetHeaderSize; offset < len(packet); {
 		opcode := packet[offset]
-		if opcode == 0xC4 {
+		switch opcode {
+		case 0xC1:
+			if offset+16 > len(packet) {
+				c.log.Warn("ignored short keyboard input", "bytes", len(packet)-offset)
+				return
+			}
+			c.inputMu.Lock()
+			events, err := c.decoder.keyboard(packet[offset : offset+16])
+			c.inputMu.Unlock()
+			if err != nil {
+				c.log.Warn("ignored invalid keyboard input", "error", err)
+				return
+			}
+			for _, event := range events {
+				c.dispatchInput(event)
+			}
+			offset += 16
+		case 0xC2:
+			if offset+12 > len(packet) {
+				c.log.Warn("ignored short pointer input", "bytes", len(packet)-offset)
+				return
+			}
+			event, err := c.decoder.pointer(packet[offset : offset+12])
+			if err != nil {
+				c.log.Warn("ignored invalid pointer input", "error", err)
+				return
+			}
+			c.dispatchInput(event)
+			offset += 12
+		case 0xC4:
+			if offset+16 > len(packet) {
+				c.log.Warn("ignored short display NACK", "bytes", len(packet)-offset)
+				return
+			}
 			from := binary.BigEndian.Uint32(packet[offset+8 : offset+12])
 			to := binary.BigEndian.Uint32(packet[offset+12 : offset+16])
 			c.resend(from, to)
 			return
+		case 0xC7:
+			// Rectangle/geometry report used during display setup.
+			if offset+28 > len(packet) {
+				return
+			}
+			offset += 28
+		default:
+			c.log.Debug("received unhandled display input", "opcode", fmt.Sprintf("0x%02x", opcode), "bytes", len(packet)-offset)
+			return
 		}
-		// Input packets are only logged in this first milestone. Their complete
-		// decoding will be connected to SSH/VNC/RDP in the next phase.
-		c.log.Debug("received display input", "opcode", fmt.Sprintf("0x%02x", opcode), "bytes", len(packet)-offset)
-		return
+	}
+}
+
+func (c *Client) dispatchInput(event InputEvent) {
+	if event.Kind == InputKey {
+		c.log.Debug("keyboard input", "hid", fmt.Sprintf("0x%02x", event.HID), "pressed", event.Pressed, "modifiers", fmt.Sprintf("0x%02x", event.Modifiers))
+	} else {
+		c.log.Debug("pointer input", "x", event.X, "y", event.Y, "buttons", fmt.Sprintf("0x%02x", event.Buttons))
+	}
+	c.inputMu.Lock()
+	handler := c.onInput
+	c.inputMu.Unlock()
+	if handler != nil {
+		handler(event)
 	}
 }
 

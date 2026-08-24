@@ -29,9 +29,10 @@ type Config struct {
 }
 
 type Server struct {
-	config Config
-	mu     sync.Mutex
-	active map[string]activeDisplay
+	config   Config
+	mu       sync.Mutex
+	active   map[string]activeDisplay
+	selected map[string]string
 }
 
 type activeDisplay struct {
@@ -56,7 +57,11 @@ func New(config Config) (*Server, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Server{config: config, active: make(map[string]activeDisplay)}, nil
+	return &Server{
+		config:   config,
+		active:   make(map[string]activeDisplay),
+		selected: make(map[string]string),
+	}, nil
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -141,7 +146,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				logger.Warn("authentication flush failed", "error", err)
 				return
 			}
-			s.showCardStatus(clientKey, properties["type"], properties["id"], properties["event"], logger)
+			if slot, definitive := cardSessionSlot(properties["type"], properties["event"]); definitive {
+				s.selectSessionSlot(clientKey, slot, properties["type"], properties["id"], logger)
+				s.showCardStatus(clientKey, properties["type"], properties["id"], properties["event"], logger)
+			}
 		case "keepAliveReq":
 			if _, err := fmt.Fprintln(writer, "keepAliveCnf"); err != nil {
 				return
@@ -168,6 +176,27 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	} else {
 		logger.Info("authentication client disconnected")
 	}
+}
+
+func cardSessionSlot(cardType, event string) (string, bool) {
+	if !strings.EqualFold(strings.TrimSpace(event), "insert") {
+		return "", false
+	}
+	if strings.EqualFold(strings.TrimSpace(cardType), "pseudo") {
+		return "no-card", true
+	}
+	return "card-present", true
+}
+
+func (s *Server) selectSessionSlot(key, slot, cardType, cardID string, logger *slog.Logger) {
+	s.mu.Lock()
+	previous := s.selected[key]
+	s.selected[key] = slot
+	s.mu.Unlock()
+	if previous == slot {
+		return
+	}
+	logger.Info("session slot selected", "slot", slot, "previous", previous, "card_type", cardType, "card_id", cardID)
 }
 
 func (s *Server) startDisplay(key string, remoteIP net.IP, properties map[string]string, logger *slog.Logger) error {
@@ -256,6 +285,7 @@ func (s *Server) closeAll() {
 	s.mu.Lock()
 	clients := s.active
 	s.active = make(map[string]activeDisplay)
+	s.selected = make(map[string]string)
 	s.mu.Unlock()
 	for _, active := range clients {
 		active.client.Close()

@@ -7,9 +7,37 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 )
+
+func TestClientDispatchesKeyboardAndPointerInput(t *testing.T) {
+	client := &Client{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	var events []InputEvent
+	client.SetInputHandler(func(event InputEvent) {
+		events = append(events, event)
+	})
+
+	packet := make([]byte, packetHeaderSize+16+12)
+	keyboard := packet[packetHeaderSize : packetHeaderSize+16]
+	keyboard[0] = 0xC1
+	keyboard[8] = 0x04 // A
+	pointer := packet[packetHeaderSize+16:]
+	pointer[0] = 0xC2
+	binary.BigEndian.PutUint16(pointer[4:6], 0x0041)
+	binary.BigEndian.PutUint16(pointer[6:8], 640)
+	binary.BigEndian.PutUint16(pointer[8:10], 480)
+
+	client.handlePacket(packet)
+	want := []InputEvent{
+		keyInput(0x04, true, 0),
+		{Kind: InputPointer, X: 640, Y: 480, Buttons: 1},
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
 
 func TestUDPSendAndNACKResend(t *testing.T) {
 	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})

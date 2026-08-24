@@ -34,6 +34,26 @@ func TestParseResolution(t *testing.T) {
 	}
 }
 
+func TestCardSessionSlotUsesDefinitiveInsertEvents(t *testing.T) {
+	tests := []struct {
+		cardType string
+		event    string
+		slot     string
+		ok       bool
+	}{
+		{"pseudo", "insert", "no-card", true},
+		{"T1unknown", "insert", "card-present", true},
+		{"card", "remove", "", false},
+		{"pseudo", "remove", "", false},
+	}
+	for _, test := range tests {
+		slot, ok := cardSessionSlot(test.cardType, test.event)
+		if slot != test.slot || ok != test.ok {
+			t.Errorf("cardSessionSlot(%q, %q) = %q, %v; want %q, %v", test.cardType, test.event, slot, ok, test.slot, test.ok)
+		}
+	}
+}
+
 func TestAuthenticationToDisplayEndToEnd(t *testing.T) {
 	displayReceiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
