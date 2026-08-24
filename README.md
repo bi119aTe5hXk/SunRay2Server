@@ -412,7 +412,7 @@ SUNRAY_CONFIG=./config.yaml docker compose up
 
 The default Compose file pulls
 `ghcr.io/bi119ate5hxk/sunray2server:latest`. Every push to `main` publishes a
-new multi-platform image for `linux/amd64`, `linux/arm64`, and `linux/arm/v7`,
+new multi-platform image for `linux/amd64` and `linux/arm64`,
 plus an immutable `sha-<full-commit-sha>` tag. To deploy a particular revision,
 set `image` in `compose.yaml` to that SHA tag. The workflow can also be run
 manually from the GitHub Actions page.
@@ -494,6 +494,21 @@ The override affects only the UDP display destination; session routing still
 uses the same serial normally. Add one entry per terminal when several Sun Rays
 connect through Docker Desktop. Native Linux and native `sunrayd` operation can
 omit this map because the TCP peer address remains visible.
+
+When Docker Compose itself runs inside a minimal Alpine container, its optional
+interactive menu may print `termbox: unsupported terminal`. This message comes
+from the Compose CLI rather than `sunrayd` and can be disabled without affecting
+the service:
+
+```sh
+COMPOSE_MENU=false docker compose up
+```
+
+The supplied image creates `/tmp/.X11-unix` as a root-owned mode `1777`
+directory before switching to UID/GID 65534. This is required by Xvfb for RDP
+sessions. If the container is customized with a `/tmp` bind mount or tmpfs,
+ensure that mount also contains a root-owned `/tmp/.X11-unix` directory with
+mode `1777`; otherwise Xvfb reports `euid != 0` and cannot select a display.
 
 ## Point the Sun Ray at the server
 

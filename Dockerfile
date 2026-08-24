@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     x11vnc \
     xauth \
     xvfb \
+    && install -d -o root -g root -m 1777 /tmp/.X11-unix \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/sunrayd /usr/local/bin/sunrayd
 
