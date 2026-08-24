@@ -153,6 +153,32 @@ func TestChangedRegionClippingGeometry(t *testing.T) {
 	}
 }
 
+func TestShowImageRegionsEncodesVisibleCopy(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	frame := image.NewRGBA(image.Rect(0, 0, 1400, 1050))
+	update := RegionUpdate{Rectangle: image.Rect(100, 200, 500, 600), CopySource: image.Pt(10, 20), Copy: true}
+	if err := client.ShowImageRegions(1400, 1050, frame, []RegionUpdate{update}); err != nil {
+		t.Fatal(err)
+	}
+	packet := readTestPacket(t, receiver)
+	if got := packet[packetHeaderSize]; got != opCopy {
+		t.Fatalf("opcode = %#x, want copy", got)
+	}
+	if got := len(packet); got != packetHeaderSize+16 {
+		t.Fatalf("copy datagram = %d bytes, want %d", got, packetHeaderSize+16)
+	}
+}
+
 func TestCalibrationTargetUsesCompactOperationCount(t *testing.T) {
 	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {

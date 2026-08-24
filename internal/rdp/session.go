@@ -32,7 +32,7 @@ type Config struct {
 	ScreenWidth  int
 	ScreenHeight int
 	Logger       *slog.Logger
-	OnFrame      func(frame *image.RGBA, changed []image.Rectangle, resized bool) error
+	OnFrame      func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
 
 // Session runs FreeRDP in a private Xvfb display and bridges that display into
@@ -113,10 +113,7 @@ func (s *Session) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.startProcess(runCtx, "x11vnc", x11vncPath, []string{
-		"-display", displayName, "-localhost", "-rfbport", strconv.Itoa(port),
-		"-forever", "-shared", "-nopw", "-xkb", "-quiet",
-	}, displayEnv, nil, exits); err != nil {
+	if err := s.startProcess(runCtx, "x11vnc", x11vncPath, x11vncArguments(displayName, port), displayEnv, nil, exits); err != nil {
 		return err
 	}
 
@@ -159,6 +156,15 @@ func (s *Session) Run(ctx context.Context) error {
 			return fmt.Errorf("%s exited unexpectedly", exit.name)
 		}
 		return fmt.Errorf("%s exited: %w", exit.name, exit.err)
+	}
+}
+
+func x11vncArguments(displayName string, port int) []string {
+	return []string{
+		"-display", displayName, "-localhost", "-rfbport", strconv.Itoa(port),
+		"-forever", "-shared", "-nopw", "-xkb", "-quiet",
+		"-defer", "5", "-wait", "5", "-nowait_bog", "-speeds", "lan",
+		"-wirecopyrect", "always", "-scrollcopyrect", "always",
 	}
 }
 

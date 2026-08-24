@@ -23,6 +23,22 @@ func TestFillEncoding(t *testing.T) {
 	}
 }
 
+func TestCopyEncoding(t *testing.T) {
+	o := Copy(100, 200, 640, 480, 10, 20).WithSequence(7)
+	if len(o.Bytes) != 16 || o.Bytes[0] != opCopy {
+		t.Fatalf("unexpected copy operation: %x", o.Bytes)
+	}
+	if got := binary.BigEndian.Uint16(o.Bytes[2:4]); got != 7 {
+		t.Fatalf("sequence = %d, want 7", got)
+	}
+	want := []uint16{100, 200, 640, 480, 10, 20}
+	for i, value := range want {
+		if got := binary.BigEndian.Uint16(o.Bytes[4+i*2 : 6+i*2]); got != value {
+			t.Fatalf("field %d = %d, want %d", i, got, value)
+		}
+	}
+}
+
 func TestBitmapRGBPadsRowsAndUsesBGR(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.SetRGBA(0, 0, color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xFF})

@@ -12,6 +12,7 @@ import (
 const (
 	opResendDone = 0xAC
 	opFill       = 0xA2
+	opCopy       = 0xA4
 	opBitmap     = 0xA5
 	opBitmapRGB  = 0xA6
 	opBounds     = 0xA8
@@ -57,6 +58,16 @@ func Fill(x, y, width, height int, c color.Color) Operation {
 	o.Bytes[13] = byte(b >> 8)
 	o.Bytes[14] = byte(g >> 8)
 	o.Bytes[15] = byte(r >> 8)
+	return o
+}
+
+// Copy moves pixels already present in the Sun Ray framebuffer. It replaces
+// a potentially multi-megabyte redraw during scrolling or window movement
+// with one 16-byte ALP operation.
+func Copy(x, y, width, height, sourceX, sourceY int) Operation {
+	o := operation(opCopy, x, y, width, height, 4)
+	binary.BigEndian.PutUint16(o.Bytes[12:14], uint16(sourceX))
+	binary.BigEndian.PutUint16(o.Bytes[14:16], uint16(sourceY))
 	return o
 }
 

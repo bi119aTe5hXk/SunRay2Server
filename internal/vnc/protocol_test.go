@@ -10,6 +10,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"sunray2server/internal/display"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -54,7 +56,7 @@ func TestHandshakeAndRawFramebufferUpdate(t *testing.T) {
 	frames := make(chan *image.RGBA, 1)
 	c := &connection{
 		Conn: clientSide,
-		onFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
+		onFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			clone := image.NewRGBA(frame.Bounds())
 			copy(clone.Pix, frame.Pix)
 			frames <- clone
@@ -123,15 +125,83 @@ func TestUpdateRequestIsLimitedToVisibleSunRayArea(t *testing.T) {
 	}
 }
 
+func TestSetEncodingsPrefersCopyRect(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	c := &connection{Conn: clientSide}
+	done := make(chan error, 1)
+	go func() {
+		message := make([]byte, 16)
+		_, err := io.ReadFull(serverSide, message)
+		if err == nil {
+			if count := binary.BigEndian.Uint16(message[2:4]); count != 3 {
+				t.Errorf("encoding count = %d, want 3", count)
+			}
+			if first := int32(binary.BigEndian.Uint32(message[4:8])); first != encodingCopyRect {
+				t.Errorf("first encoding = %d, want CopyRect", first)
+			}
+		}
+		done <- err
+	}()
+	if err := c.setEncodings(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChangedRectanglesRemainSeparate(t *testing.T) {
 	visible := image.Rect(0, 0, 1400, 1050)
-	rectangles := appendVisible(nil, image.Rect(10, 10, 20, 20), visible)
-	rectangles = appendVisible(rectangles, image.Rect(1000, 800, 1010, 810), visible)
+	rectangles := appendVisible(nil, display.RegionUpdate{Rectangle: image.Rect(10, 10, 20, 20)}, visible)
+	rectangles = appendVisible(rectangles, display.RegionUpdate{Rectangle: image.Rect(1000, 800, 1010, 810)}, visible)
 	if len(rectangles) != 2 {
 		t.Fatalf("rectangles = %v", rectangles)
 	}
-	if rectangles[0] != image.Rect(10, 10, 20, 20) || rectangles[1] != image.Rect(1000, 800, 1010, 810) {
+	if rectangles[0].Rectangle != image.Rect(10, 10, 20, 20) || rectangles[1].Rectangle != image.Rect(1000, 800, 1010, 810) {
 		t.Fatalf("rectangles = %v", rectangles)
+	}
+}
+
+func TestAppendVisiblePreservesOnlyUnclippedCopy(t *testing.T) {
+	visible := image.Rect(0, 0, 100, 100)
+	copyUpdate := display.RegionUpdate{Rectangle: image.Rect(10, 10, 30, 30), CopySource: image.Pt(40, 40), Copy: true}
+	updates := appendVisible(nil, copyUpdate, visible)
+	if len(updates) != 1 || !updates[0].Copy || updates[0].CopySource != image.Pt(40, 40) {
+		t.Fatalf("visible copy = %+v", updates)
+	}
+	clipped := appendVisible(nil, display.RegionUpdate{Rectangle: image.Rect(90, 90, 110, 110), CopySource: image.Pt(0, 0), Copy: true}, visible)
+	if len(clipped) != 1 || clipped[0].Copy || clipped[0].Rectangle != image.Rect(90, 90, 100, 100) {
+		t.Fatalf("clipped copy fallback = %+v", clipped)
+	}
+}
+
+func TestReadCopyRectReturnsSourceAndUpdatesFramebuffer(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	frame := image.NewRGBA(image.Rect(0, 0, 4, 1))
+	frame.SetRGBA(0, 0, color.RGBA{R: 10, A: 255})
+	frame.SetRGBA(1, 0, color.RGBA{G: 20, A: 255})
+	c := &connection{Conn: clientSide, frame: frame}
+	done := make(chan error, 1)
+	go func() {
+		var source [4]byte
+		binary.BigEndian.PutUint16(source[0:2], 0)
+		binary.BigEndian.PutUint16(source[2:4], 0)
+		_, err := serverSide.Write(source[:])
+		done <- err
+	}()
+	source, err := c.readCopyRect(image.Rect(2, 0, 4, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if source != image.Pt(0, 0) || frame.RGBAAt(2, 0).R != 10 || frame.RGBAAt(3, 0).G != 20 {
+		t.Fatalf("source=%v copied pixels=%#v,%#v", source, frame.RGBAAt(2, 0), frame.RGBAAt(3, 0))
 	}
 }
 

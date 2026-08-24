@@ -130,6 +130,13 @@ one-bit bitmaps. Photographs and full-screen motion still fall back to raw RGB,
 so reducing the logical display resolution remains the most effective option
 for that workload.
 
+VNC `CopyRect` updates are passed through as native Sun Ray framebuffer copies.
+This reduces a window move or scroll from a large RGB transfer to a 16-byte ALP
+operation when the source and destination are fully visible. Scaled or clipped
+updates automatically fall back to pixels. The RDP x11vnc bridge enables its
+window/scroll CopyRect detection, uses 5 ms polling/defer intervals, and disables
+the long idle sleep used when x11vnc thinks framebuffer polling is overloaded.
+
 VNC credentials are configured per session, so different servers can use
 different passwords. For a simple private-LAN test, they may be written directly
 in the ignored local `config.yaml`:

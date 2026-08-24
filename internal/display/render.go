@@ -10,6 +10,15 @@ import (
 
 const maxRGBPayload = maxDatagramSize - packetHeaderSize - 12
 
+// RegionUpdate describes an ordered framebuffer change. Copy operations are
+// safe only when their complete source and destination are visible; otherwise
+// rendering falls back to the final pixels in Image.
+type RegionUpdate struct {
+	Rectangle  image.Rectangle
+	CopySource image.Point
+	Copy       bool
+}
+
 func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error {
 	c.renderMu.Lock()
 	defer c.renderMu.Unlock()
@@ -166,14 +175,20 @@ func (c *Client) sendEncodedBitmap(img image.Image, source image.Rectangle, dest
 }
 
 func encodeBitmapOperations(img image.Image, source image.Rectangle, destination image.Point) ([]Operation, error) {
+	return appendEncodedBitmapOperations(nil, img, source, destination)
+}
+
+func appendEncodedBitmapOperations(ops []Operation, img image.Image, source image.Rectangle, destination image.Point) ([]Operation, error) {
 	if source.Empty() {
-		return nil, nil
+		return ops, nil
 	}
 	lines := make([]scanlineEncoding, source.Dy())
 	for y := source.Min.Y; y < source.Max.Y; y++ {
 		lines[y-source.Min.Y] = classifyScanline(img, source.Min.X, source.Max.X, y)
 	}
-	ops := make([]Operation, 0, source.Dy())
+	if ops == nil {
+		ops = make([]Operation, 0, source.Dy())
+	}
 	for first := 0; first < len(lines); {
 		last := first + 1
 		for last < len(lines) && compatibleScanlines(lines[first], lines[last]) {
@@ -290,6 +305,13 @@ func appendBiColorTiles(ops []Operation, img image.Image, source image.Rectangle
 // the same centered/cropped placement as ShowImage, allowing remote framebuffer
 // updates to avoid retransmitting the entire screen.
 func (c *Client) ShowImageRegion(screenWidth, screenHeight int, img image.Image, changed image.Rectangle) error {
+	return c.ShowImageRegions(screenWidth, screenHeight, img, []RegionUpdate{{Rectangle: changed}})
+}
+
+// ShowImageRegions applies one ordered remote framebuffer update under a
+// single render lock and one batched ALP message. VNC CopyRect updates become
+// native framebuffer copies; clipped/scaled copies use the RGB fallback.
+func (c *Client) ShowImageRegions(screenWidth, screenHeight int, img image.Image, updates []RegionUpdate) error {
 	c.renderMu.Lock()
 	defer c.renderMu.Unlock()
 	if screenWidth < 1 || screenHeight < 1 {
@@ -303,13 +325,29 @@ func (c *Client) ShowImageRegion(screenWidth, screenHeight int, img image.Image,
 	visibleWidth := min(source.Dx(), screenWidth)
 	visibleHeight := min(source.Dy(), screenHeight)
 	visible := image.Rect(source.Min.X, source.Min.Y, source.Min.X+visibleWidth, source.Min.Y+visibleHeight)
-	changed = changed.Intersect(visible)
-	if changed.Empty() {
-		return nil
-	}
 	offset := image.Pt((screenWidth-visibleWidth)/2-source.Min.X, (screenHeight-visibleHeight)/2-source.Min.Y)
-
-	return c.sendEncodedBitmap(img, changed, changed.Min.Add(offset))
+	ops := make([]Operation, 0, len(updates))
+	for _, update := range updates {
+		changed := update.Rectangle.Intersect(visible)
+		if changed.Empty() {
+			continue
+		}
+		if update.Copy && changed == update.Rectangle {
+			sourceRect := image.Rectangle{Min: update.CopySource, Max: update.CopySource.Add(changed.Size())}
+			if sourceRect.In(visible) {
+				destination := changed.Min.Add(offset)
+				sourcePoint := sourceRect.Min.Add(offset)
+				ops = append(ops, Copy(destination.X, destination.Y, changed.Dx(), changed.Dy(), sourcePoint.X, sourcePoint.Y))
+				continue
+			}
+		}
+		var err error
+		ops, err = appendEncodedBitmapOperations(ops, img, changed, changed.Min.Add(offset))
+		if err != nil {
+			return err
+		}
+	}
+	return c.SendBatch(ops)
 }
 
 func bestTileSize(width, height int) (int, int) {

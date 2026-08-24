@@ -23,6 +23,19 @@ func TestFreeRDPArguments(t *testing.T) {
 	}
 }
 
+func TestX11VNCArgumentsEnableLowLatencyCopyRect(t *testing.T) {
+	arguments := x11vncArguments(":42", 5901)
+	joined := strings.Join(arguments, " ")
+	for _, expected := range []string{
+		"-display :42", "-rfbport 5901", "-defer 5", "-wait 5",
+		"-nowait_bog", "-speeds lan", "-wirecopyrect always", "-scrollcopyrect always",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Errorf("missing %q in %q", expected, joined)
+		}
+	}
+}
+
 func TestFindExecutableReportsAllCandidates(t *testing.T) {
 	_, err := findExecutable("sunray-helper-that-does-not-exist-a", "sunray-helper-that-does-not-exist-b")
 	if err == nil || !strings.Contains(err.Error(), "sunray-helper-that-does-not-exist-a or sunray-helper-that-does-not-exist-b") {

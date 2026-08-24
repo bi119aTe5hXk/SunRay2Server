@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"sunray2server/internal/display"
 )
 
 const (
@@ -32,7 +34,7 @@ const (
 	maxDesktopName = 1 << 20
 )
 
-type frameHandler func(frame *image.RGBA, changed []image.Rectangle, resized bool) error
+type frameHandler func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 
 type connection struct {
 	net.Conn
@@ -299,7 +301,9 @@ func (c *connection) setPixelFormat() error {
 }
 
 func (c *connection) setEncodings() error {
-	encodings := []int32{encodingRaw, encodingCopyRect, encodingDesktopSize}
+	// CopyRect is the highest-value encoding for a Sun Ray: the downstream
+	// ALP transport can reproduce it as one native 16-byte framebuffer copy.
+	encodings := []int32{encodingCopyRect, encodingRaw, encodingDesktopSize}
 	message := make([]byte, 4+4*len(encodings))
 	message[0] = 2
 	binary.BigEndian.PutUint16(message[2:4], uint16(len(encodings)))
@@ -383,7 +387,7 @@ func (c *connection) readFramebufferUpdate() error {
 		return fmt.Errorf("read VNC framebuffer update header: %w", err)
 	}
 	count := int(binary.BigEndian.Uint16(header[1:3]))
-	changed := make([]image.Rectangle, 0, count)
+	changed := make([]display.RegionUpdate, 0, count)
 	resized := false
 	for range count {
 		rectHeader := make([]byte, 12)
@@ -402,18 +406,19 @@ func (c *connection) readFramebufferUpdate() error {
 			if err := c.readRaw(rect); err != nil {
 				return err
 			}
-			changed = appendVisible(changed, rect, c.visibleBounds())
+			changed = appendVisible(changed, display.RegionUpdate{Rectangle: rect}, c.visibleBounds())
 		case encodingCopyRect:
-			if err := c.readCopyRect(rect); err != nil {
+			source, err := c.readCopyRect(rect)
+			if err != nil {
 				return err
 			}
-			changed = appendVisible(changed, rect, c.visibleBounds())
+			changed = appendVisible(changed, display.RegionUpdate{Rectangle: rect, CopySource: source, Copy: true}, c.visibleBounds())
 		case encodingDesktopSize:
 			if err := validateSize(width, height); err != nil {
 				return err
 			}
 			c.setSize(width, height)
-			changed = append(changed[:0], c.visibleBounds())
+			changed = append(changed[:0], display.RegionUpdate{Rectangle: c.visibleBounds()})
 			resized = true
 		default:
 			return fmt.Errorf("VNC server used unrequested encoding %d", encoding)
@@ -453,25 +458,25 @@ func (c *connection) readRaw(rect image.Rectangle) error {
 	return nil
 }
 
-func (c *connection) readCopyRect(rect image.Rectangle) error {
+func (c *connection) readCopyRect(rect image.Rectangle) (image.Point, error) {
 	var source [4]byte
 	if _, err := io.ReadFull(c, source[:]); err != nil {
-		return fmt.Errorf("read VNC CopyRect source: %w", err)
+		return image.Point{}, fmt.Errorf("read VNC CopyRect source: %w", err)
 	}
 	src := image.Pt(int(binary.BigEndian.Uint16(source[0:2])), int(binary.BigEndian.Uint16(source[2:4])))
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if c.frame == nil || !rect.In(c.frame.Bounds()) {
-		return fmt.Errorf("invalid VNC CopyRect destination %v", rect)
+		return image.Point{}, fmt.Errorf("invalid VNC CopyRect destination %v", rect)
 	}
 	sourceRect := image.Rectangle{Min: src, Max: src.Add(rect.Size())}
 	if !sourceRect.In(c.frame.Bounds()) {
-		return fmt.Errorf("invalid VNC CopyRect source %v", sourceRect)
+		return image.Point{}, fmt.Errorf("invalid VNC CopyRect source %v", sourceRect)
 	}
 	temporary := image.NewRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
 	draw.Draw(temporary, temporary.Bounds(), c.frame, sourceRect.Min, draw.Src)
 	draw.Draw(c.frame, rect, temporary, image.Point{}, draw.Src)
-	return nil
+	return src, nil
 }
 
 func (c *connection) skipColorMap() error {
@@ -497,11 +502,17 @@ func (c *connection) skipServerCutText() error {
 	return err
 }
 
-func appendVisible(rectangles []image.Rectangle, changed, visible image.Rectangle) []image.Rectangle {
-	changed = changed.Intersect(visible)
-	if changed.Empty() {
+func appendVisible(rectangles []display.RegionUpdate, changed display.RegionUpdate, visible image.Rectangle) []display.RegionUpdate {
+	clipped := changed.Rectangle.Intersect(visible)
+	if clipped.Empty() {
 		return rectangles
 	}
+	if clipped != changed.Rectangle {
+		// A clipped CopyRect is no longer a direct source/destination mapping;
+		// use the already updated framebuffer pixels instead.
+		changed.Copy = false
+	}
+	changed.Rectangle = clipped
 	return append(rectangles, changed)
 }
 

@@ -464,7 +464,7 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 		ScreenHeight: screenHeight,
 		ScaleToFit:   mode != appconfig.VNCResolutionServer,
 		Logger:       logger,
-		OnFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
+		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
 			}
@@ -479,12 +479,7 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 				}
 				return active.client.Send(display.LocalCursor())
 			}
-			for _, rectangle := range changed {
-				if err := active.client.ShowImageRegion(displayWidth, displayHeight, frame, rectangle); err != nil {
-					return err
-				}
-			}
-			return nil
+			return active.client.ShowImageRegions(displayWidth, displayHeight, frame, changed)
 		},
 	})
 	active.client.SetResyncHandler(session.RequestFullFrame)
@@ -502,7 +497,7 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 		Username: definition.Username, Domain: definition.Domain, Password: password,
 		Certificate: definition.Certificate, ScreenWidth: screenWidth, ScreenHeight: screenHeight,
 		Logger: logger,
-		OnFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
+		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
 			}
@@ -513,12 +508,7 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 				}
 				return active.client.Send(display.LocalCursor())
 			}
-			for _, rectangle := range changed {
-				if err := active.client.ShowImageRegion(screenWidth, screenHeight, frame, rectangle); err != nil {
-					return err
-				}
-			}
-			return nil
+			return active.client.ShowImageRegions(screenWidth, screenHeight, frame, changed)
 		},
 	})
 	active.client.SetResyncHandler(session.RequestFullFrame)

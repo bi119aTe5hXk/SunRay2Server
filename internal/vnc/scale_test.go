@@ -88,9 +88,9 @@ func TestFrameDeliveryCoalescesUpdatesWhileDisplayIsBusy(t *testing.T) {
 	delivered := make(chan deliveredFrame, 2)
 	releaseFirst := make(chan struct{})
 	calls := 0
-	session := NewSession(Config{OnFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
+	session := NewSession(Config{OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 		calls++
-		delivered <- deliveredFrame{changed: changed[0], pixel: frame.RGBAAt(7, 7)}
+		delivered <- deliveredFrame{changed: changed[0].Rectangle, pixel: frame.RGBAAt(7, 7)}
 		if calls == 1 {
 			<-releaseFirst
 		}
@@ -102,7 +102,7 @@ func TestFrameDeliveryCoalescesUpdatesWhileDisplayIsBusy(t *testing.T) {
 
 	frame := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	draw.Draw(frame, frame.Bounds(), image.NewUniform(color.RGBA{R: 1, A: 255}), image.Point{}, draw.Src)
-	if err := session.enqueueFrame(frame, []image.Rectangle{frame.Bounds()}, false); err != nil {
+	if err := session.enqueueFrame(frame, []display.RegionUpdate{{Rectangle: frame.Bounds()}}, false); err != nil {
 		t.Fatal(err)
 	}
 	first := <-delivered
@@ -111,9 +111,9 @@ func TestFrameDeliveryCoalescesUpdatesWhileDisplayIsBusy(t *testing.T) {
 	}
 
 	draw.Draw(frame, image.Rect(2, 2, 4, 4), image.NewUniform(color.RGBA{G: 2, A: 255}), image.Point{}, draw.Src)
-	_ = session.enqueueFrame(frame, []image.Rectangle{image.Rect(2, 2, 4, 4)}, false)
+	_ = session.enqueueFrame(frame, []display.RegionUpdate{{Rectangle: image.Rect(2, 2, 4, 4)}}, false)
 	draw.Draw(frame, image.Rect(7, 7, 9, 9), image.NewUniform(color.RGBA{B: 3, A: 255}), image.Point{}, draw.Src)
-	_ = session.enqueueFrame(frame, []image.Rectangle{image.Rect(7, 7, 9, 9)}, false)
+	_ = session.enqueueFrame(frame, []display.RegionUpdate{{Rectangle: image.Rect(7, 7, 9, 9)}}, false)
 	close(releaseFirst)
 
 	select {
@@ -131,14 +131,24 @@ func TestFrameDeliveryCoalescesUpdatesWhileDisplayIsBusy(t *testing.T) {
 
 func TestChangedRectanglesKeepDistantUpdatesSeparate(t *testing.T) {
 	bounds := image.Rect(0, 0, 1400, 1050)
-	rectangles := appendChangedRectangle(nil, image.Rect(10, 10, 20, 20), bounds)
-	rectangles = appendChangedRectangle(rectangles, image.Rect(1000, 900, 1010, 910), bounds)
+	rectangles := appendChangedUpdate(nil, display.RegionUpdate{Rectangle: image.Rect(10, 10, 20, 20)}, bounds)
+	rectangles = appendChangedUpdate(rectangles, display.RegionUpdate{Rectangle: image.Rect(1000, 900, 1010, 910)}, bounds)
 	if len(rectangles) != 2 {
 		t.Fatalf("distant rectangle count = %d, want 2", len(rectangles))
 	}
-	rectangles = appendChangedRectangle(rectangles, image.Rect(18, 18, 30, 30), bounds)
-	if len(rectangles) != 2 || rectangles[1] != image.Rect(10, 10, 30, 30) {
+	rectangles = appendChangedUpdate(rectangles, display.RegionUpdate{Rectangle: image.Rect(18, 18, 30, 30)}, bounds)
+	if len(rectangles) != 2 || rectangles[1].Rectangle != image.Rect(10, 10, 30, 30) {
 		t.Fatalf("nearby rectangle merge = %v", rectangles)
+	}
+}
+
+func TestCopyUpdatePreservesOperationOrder(t *testing.T) {
+	bounds := image.Rect(0, 0, 100, 100)
+	updates := appendChangedUpdate(nil, display.RegionUpdate{Rectangle: image.Rect(0, 0, 10, 10)}, bounds)
+	updates = appendChangedUpdate(updates, display.RegionUpdate{Rectangle: image.Rect(20, 20, 30, 30), CopySource: image.Pt(0, 0), Copy: true}, bounds)
+	updates = appendChangedUpdate(updates, display.RegionUpdate{Rectangle: image.Rect(5, 5, 15, 15)}, bounds)
+	if len(updates) != 3 || updates[0].Copy || !updates[1].Copy || updates[2].Copy {
+		t.Fatalf("ordered updates = %+v", updates)
 	}
 }
 
@@ -146,7 +156,7 @@ func TestRequestFullFrameSchedulesLatestFramebuffer(t *testing.T) {
 	session := NewSession(Config{})
 	session.latestFrame = image.NewRGBA(image.Rect(0, 0, 1400, 1050))
 	session.RequestFullFrame()
-	if len(session.pendingChanged) != 1 || session.pendingChanged[0] != session.latestFrame.Bounds() {
+	if len(session.pendingChanged) != 1 || session.pendingChanged[0].Rectangle != session.latestFrame.Bounds() {
 		t.Fatalf("pending full-frame rectangles = %v", session.pendingChanged)
 	}
 	if !session.pendingResized {
