@@ -209,6 +209,140 @@ func TestOperationSequenceExtendsAcrossWireWrap(t *testing.T) {
 	}
 }
 
+func TestWrappedNACKReplaysCurrentSequenceEpoch(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	client.mu.Lock()
+	client.opSeq = 65535
+	client.mu.Unlock()
+	for range 3 {
+		if err := client.Send(Fill(1, 2, 3, 4, testColor{})); err != nil {
+			t.Fatal(err)
+		}
+		_ = readTestPacket(t, receiver)
+	}
+
+	nack := make([]byte, 32)
+	nack[packetHeaderSize] = 0xC4
+	binary.BigEndian.PutUint32(nack[24:28], 0)
+	binary.BigEndian.PutUint32(nack[28:32], 2)
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: client.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		packet := readTestPacket(t, receiver)
+		if got := packet[packetHeaderSize]; got != opFill {
+			t.Fatalf("wrapped replay %d opcode = %#x, want fill", i, got)
+		}
+		if got := binary.BigEndian.Uint16(packet[packetHeaderSize+2 : packetHeaderSize+4]); got != uint16(i) {
+			t.Fatalf("wrapped replay %d sequence = %d", i, got)
+		}
+	}
+	completion := readTestPacket(t, receiver)
+	if got := completion[packetHeaderSize+len(Pad().Bytes)]; got != opResendDone {
+		t.Fatalf("completion opcode = %#x, want %#x", got, opResendDone)
+	}
+}
+
+func TestMissingNACKHistoryDoesNotSendCompletion(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.Send(Fill(1, 2, 3, 4, testColor{})); err != nil {
+		t.Fatal(err)
+	}
+	_ = readTestPacket(t, receiver)
+	client.mu.Lock()
+	delete(client.history, 1)
+	client.mu.Unlock()
+
+	nack := make([]byte, 32)
+	nack[packetHeaderSize] = 0xC4
+	binary.BigEndian.PutUint32(nack[24:28], 1)
+	binary.BigEndian.PutUint32(nack[28:32], 1)
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: client.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 1500)
+	if _, _, err := receiver.ReadFromUDP(buffer); err == nil {
+		t.Fatal("missing NACK history unexpectedly produced a completion packet")
+	} else if networkError, ok := err.(net.Error); !ok || !networkError.Timeout() {
+		t.Fatalf("read after missing NACK history: %v", err)
+	}
+}
+
+func TestExtendOperationSequence(t *testing.T) {
+	tests := []struct {
+		wire, current, want uint32
+	}{
+		{0, 65734, 65536},
+		{198, 65734, 65734},
+		{65530, 65541, 65530},
+		{5, 65541, 65541},
+		{70000, 71000, 70000},
+		{65536, 27933, 0},
+	}
+	for _, test := range tests {
+		if got := extendOperationSequence(test.wire, test.current); got != test.want {
+			t.Errorf("extendOperationSequence(%d, %d) = %d, want %d", test.wire, test.current, got, test.want)
+		}
+	}
+	if !validNACKRange(65530, 5) {
+		t.Fatal("short wrapped NACK range was rejected")
+	}
+}
+
+func TestFlushHistoryPreservesOperationSequence(t *testing.T) {
+	client := &Client{
+		opSeq:   42,
+		history: map[uint32][]byte{41: {1}, 42: {2}},
+	}
+	client.FlushHistory()
+	if len(client.history) != 0 {
+		t.Fatalf("history length = %d, want 0", len(client.history))
+	}
+	if client.opSeq != 42 {
+		t.Fatalf("operation sequence = %d, want 42", client.opSeq)
+	}
+}
+
+func TestPacketPacingGroupsPacketsIntoBursts(t *testing.T) {
+	client := &Client{delay: time.Nanosecond}
+	for range packetBurstSize {
+		client.pacePacketLocked()
+	}
+	if client.burstPackets != packetBurstSize {
+		t.Fatalf("burst packets = %d, want %d", client.burstPackets, packetBurstSize)
+	}
+	client.pacePacketLocked()
+	if client.burstPackets != 1 {
+		t.Fatalf("new burst packets = %d, want 1", client.burstPackets)
+	}
+}
+
 type testColor struct{}
 
 func (testColor) RGBA() (uint32, uint32, uint32, uint32) { return 0x1111, 0x2222, 0x3333, 0xFFFF }

@@ -28,6 +28,9 @@ func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error
 			return err
 		}
 	}
+	// Bounds/cursor setup is complete and the following bitmap supersedes the
+	// previous screen. Keep only this new frame available for retransmission.
+	c.FlushHistory()
 
 	source := img.Bounds()
 	visibleWidth := min(source.Dx(), screenWidth)
@@ -60,6 +63,7 @@ func (c *Client) ShowCalibrationImage(width, height, clearWidth, clearHeight int
 			return err
 		}
 	}
+	c.FlushHistory()
 	return c.sendBitmapTiles(img, img.Bounds(), image.Point{})
 }
 
@@ -73,6 +77,7 @@ func (c *Client) ShowCalibrationTarget(width, height, clearWidth, clearHeight in
 	if width < 1 || height < 1 || clearWidth < width || clearHeight < height {
 		return fmt.Errorf("invalid calibration geometry %dx%d within %dx%d", width, height, clearWidth, clearHeight)
 	}
+	c.FlushHistory()
 
 	ops := []Operation{
 		Bounds(clearWidth, clearHeight),

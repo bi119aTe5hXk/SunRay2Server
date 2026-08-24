@@ -18,11 +18,14 @@ const (
 	maxNACKRange     = 4096
 	maxHistorySize   = 8192
 	nackOpenEnded    = 0x00FFFFFF
+	operationSeqMod  = 1 << 16
+	packetBurstSize  = 8
 )
 
 type nackRange struct {
-	from uint32
-	to   uint32
+	marker uint32
+	from   uint32
+	to     uint32
 }
 
 // Client owns the bidirectional UDP display channel for one Sun Ray.
@@ -39,6 +42,10 @@ type Client struct {
 	packetSeq          uint16
 	opSeq              uint32
 	history            map[uint32][]byte
+	burstPackets       int
+	burstStarted       time.Time
+	lastMissingNACKLog time.Time
+	missingNACKs       int
 	nackRequests       chan nackRange
 	done               chan struct{}
 	closed             bool
@@ -125,7 +132,17 @@ func (c *Client) Send(op Operation) error {
 	return c.sendLocked(encoded)
 }
 
+// FlushHistory marks a full-screen refresh boundary. kOpenRay does the same
+// before bulk bitmap updates so a later NACK cannot replay stale pixels from a
+// superseded frame.
+func (c *Client) FlushHistory() {
+	c.mu.Lock()
+	clear(c.history)
+	c.mu.Unlock()
+}
+
 func (c *Client) sendLocked(encoded []byte) error {
+	c.pacePacketLocked()
 	c.packetSeq++
 	packet := make([]byte, packetHeaderSize+len(encoded))
 	binary.BigEndian.PutUint16(packet[0:2], c.packetSeq)
@@ -135,10 +152,30 @@ func (c *Client) sendLocked(encoded []byte) error {
 	if _, err := c.conn.WriteToUDP(packet, c.remote); err != nil {
 		return fmt.Errorf("send display packet: %w", err)
 	}
-	if c.delay > 0 {
-		time.Sleep(c.delay)
-	}
 	return nil
+}
+
+// pacePacketLocked preserves the configured average packet delay while
+// sending small bursts. Sub-millisecond time.Sleep calls are commonly rounded
+// up to roughly a millisecond in Linux containers; sleeping after every packet
+// therefore turned a 200 us setting into multi-second full-screen refreshes.
+func (c *Client) pacePacketLocked() {
+	if c.delay <= 0 {
+		return
+	}
+	if c.burstPackets == 0 {
+		c.burstStarted = time.Now()
+	}
+	if c.burstPackets < packetBurstSize {
+		c.burstPackets++
+		return
+	}
+	interval := c.delay * packetBurstSize
+	if wait := interval - time.Since(c.burstStarted); wait > 0 {
+		time.Sleep(wait)
+	}
+	c.burstStarted = time.Now()
+	c.burstPackets = 1
 }
 
 func (c *Client) readLoop() {
@@ -211,9 +248,10 @@ func (c *Client) handlePacket(packet []byte) {
 				c.log.Warn("ignored short display NACK", "bytes", len(packet)-offset)
 				return
 			}
+			marker := binary.BigEndian.Uint32(packet[offset+4 : offset+8])
 			from := binary.BigEndian.Uint32(packet[offset+8 : offset+12])
 			to := binary.BigEndian.Uint32(packet[offset+12 : offset+16])
-			c.queueResend(from, to)
+			c.queueResend(marker, from, to)
 			return
 		case 0xC7:
 			// Rectangle/geometry report used during display setup.
@@ -250,12 +288,12 @@ func (c *Client) dispatchInput(event InputEvent) {
 	}
 }
 
-func (c *Client) queueResend(from, to uint32) {
-	if from > nackOpenEnded || to > nackOpenEnded || to < from || to != nackOpenEnded && to-from+1 > maxNACKRange {
+func (c *Client) queueResend(marker, from, to uint32) {
+	if !validNACKRange(from, to) {
 		c.log.Warn("ignored invalid NACK range", "from", from, "to", to)
 		return
 	}
-	req := nackRange{from: from, to: to}
+	req := nackRange{marker: marker, from: from, to: to}
 	select {
 	case c.nackRequests <- req:
 		return
@@ -273,47 +311,75 @@ func (c *Client) queueResend(from, to uint32) {
 	}
 }
 
+func validNACKRange(from, to uint32) bool {
+	if from > nackOpenEnded || to > nackOpenEnded {
+		return false
+	}
+	if to == nackOpenEnded {
+		return true
+	}
+	if to >= from {
+		return to-from+1 <= maxNACKRange
+	}
+	// A terminal may express one short range across the 16-bit drawing
+	// sequence wrap, for example 65530..5.
+	if from < operationSeqMod && to < operationSeqMod {
+		return operationSeqMod-from+to+1 <= maxNACKRange
+	}
+	return false
+}
+
 func (c *Client) resendLoop() {
 	for {
 		select {
 		case req := <-c.nackRequests:
-			c.resend(req.from, req.to)
+			c.resend(req.marker, req.from, req.to)
 		case <-c.done:
 			return
 		}
 	}
 }
 
-func (c *Client) resend(from, to uint32) {
+func (c *Client) resend(marker, from, to uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return
 	}
-	requestedTo := to
+	requestedFrom, requestedTo := from, to
+	from = extendOperationSequence(from, c.opSeq)
 	if to == nackOpenEnded {
-		if from > c.opSeq {
-			return
-		}
 		to = c.opSeq
+	} else {
+		to = extendOperationSequence(to, c.opSeq)
+		if to < from && requestedFrom < operationSeqMod && requestedTo < operationSeqMod {
+			to += operationSeqMod
+		}
 	}
-	c.log.Debug("resending display operations", "from", from, "to", to, "requested_to", requestedTo)
 	resent := 0
-	for seq := from; seq <= to; seq++ {
-		encoded, ok := c.history[seq]
-		if !ok {
-			break
+	if from <= to && from <= c.opSeq {
+		to = min(to, c.opSeq)
+		for seq := from; seq <= to; seq++ {
+			encoded, ok := c.history[seq]
+			if !ok {
+				break
+			}
+			if err := c.sendLocked(encoded); err != nil {
+				c.log.Warn("display resend failed", "sequence", seq, "error", err)
+				return
+			}
+			resent++
 		}
-		if err := c.sendLocked(encoded); err != nil {
-			c.log.Warn("display resend failed", "sequence", seq, "error", err)
-			return
-		}
-		resent++
 	}
 	if resent == 0 {
-		c.log.Debug("display resend range is no longer in history", "from", from, "to", to)
+		// Match kOpenRay: if the first requested operation is unavailable,
+		// return without a completion packet. Replying to an impossible range
+		// makes Sun Ray 2 firmware immediately repeat the request, creating a
+		// self-sustaining request/completion loop after a server restart.
+		c.logMissingNACKLocked(marker, from, to, requestedFrom, requestedTo)
 		return
 	}
+	c.log.Debug("resending display operations", "marker", marker, "from", from, "to", to, "requested_from", requestedFrom, "requested_to", requestedTo)
 	pad := Pad().WithSequence(uint16(c.opSeq)).Bytes
 	status := ResendDone(uint16(requestedTo)).WithSequence(uint16(c.opSeq)).Bytes
 	// Pad and 0xAC form one completion message in the original protocol. If
@@ -326,5 +392,42 @@ func (c *Client) resend(from, to uint32) {
 		c.log.Warn("display resend completion failed", "error", err)
 		return
 	}
-	c.log.Debug("display operation resend complete", "from", from, "to", to, "requested_to", requestedTo, "resent", resent)
+	c.log.Debug("display operation resend complete", "marker", marker, "from", from, "to", to, "requested_from", requestedFrom, "requested_to", requestedTo, "resent", resent)
+}
+
+func (c *Client) logMissingNACKLocked(marker, from, to, requestedFrom, requestedTo uint32) {
+	c.missingNACKs++
+	now := time.Now()
+	if !c.lastMissingNACKLog.IsZero() && now.Sub(c.lastMissingNACKLog) < 5*time.Second {
+		return
+	}
+	c.log.Debug("display resend range is no longer in history",
+		"marker", marker,
+		"from", from,
+		"to", to,
+		"requested_from", requestedFrom,
+		"requested_to", requestedTo,
+		"requests_since_last_log", c.missingNACKs,
+	)
+	c.lastMissingNACKLog = now
+	c.missingNACKs = 0
+}
+
+// extendOperationSequence maps the low 16 operation-sequence bits reported by
+// the terminal to the nearest epoch of the server's monotonically increasing
+// operation count.
+func extendOperationSequence(wire, current uint32) uint32 {
+	// The operation header contains only 16 sequence bits. Some firmware
+	// expands them into a higher epoch in the 32-bit NACK field; after a server
+	// restart that epoch may be ahead of the new server counter. Compare the
+	// low 16 bits and select the epoch nearest to the current operation.
+	candidate := current&^(uint32(operationSeqMod)-1) | wire&(operationSeqMod-1)
+	if candidate > current && candidate-current > operationSeqMod/2 {
+		if candidate >= operationSeqMod {
+			candidate -= operationSeqMod
+		}
+	} else if current > candidate && current-candidate > operationSeqMod/2 {
+		candidate += operationSeqMod
+	}
+	return candidate
 }
