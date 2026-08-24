@@ -54,7 +54,7 @@ func TestHandshakeAndRawFramebufferUpdate(t *testing.T) {
 	frames := make(chan *image.RGBA, 1)
 	c := &connection{
 		Conn: clientSide,
-		onFrame: func(frame *image.RGBA, changed image.Rectangle, resized bool) error {
+		onFrame: func(frame *image.RGBA, changed []image.Rectangle, resized bool) error {
 			clone := image.NewRGBA(frame.Bounds())
 			copy(clone.Pix, frame.Pix)
 			frames <- clone
@@ -92,6 +92,46 @@ func TestHandshakeAndRawFramebufferUpdate(t *testing.T) {
 	}
 	if err := <-serveDone; err != io.EOF {
 		t.Fatalf("serve returned %v, want EOF", err)
+	}
+}
+
+func TestUpdateRequestIsLimitedToVisibleSunRayArea(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	c := &connection{Conn: clientSide, width: 2880, height: 1800, viewWidth: 1400, viewHeight: 1050}
+
+	done := make(chan error, 1)
+	go func() {
+		message := make([]byte, 10)
+		_, err := io.ReadFull(serverSide, message)
+		if err == nil {
+			if width := binary.BigEndian.Uint16(message[6:8]); width != 1400 {
+				t.Errorf("requested width = %d", width)
+			}
+			if height := binary.BigEndian.Uint16(message[8:10]); height != 1050 {
+				t.Errorf("requested height = %d", height)
+			}
+		}
+		done <- err
+	}()
+	if err := c.requestUpdate(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChangedRectanglesRemainSeparate(t *testing.T) {
+	visible := image.Rect(0, 0, 1400, 1050)
+	rectangles := appendVisible(nil, image.Rect(10, 10, 20, 20), visible)
+	rectangles = appendVisible(rectangles, image.Rect(1000, 800, 1010, 810), visible)
+	if len(rectangles) != 2 {
+		t.Fatalf("rectangles = %v", rectangles)
+	}
+	if rectangles[0] != image.Rect(10, 10, 20, 20) || rectangles[1] != image.Rect(1000, 800, 1010, 810) {
+		t.Fatalf("rectangles = %v", rectangles)
 	}
 }
 

@@ -20,8 +20,9 @@ milestone implements only enough of the kOpenRay-compatible protocol to:
 
 VNC is the first connected remote-session adapter. SSH, RDP and persistent card
 registration are not connected yet. The two card states are detected as session
-slots, but this first VNC milestone uses one configured VNC target for both;
-binding a different adapter or target to each slot is the next step.
+slots. YAML routing can bind either state, an exact future card ID, or a specific
+terminal serial number to a `card-test` or VNC session. SSH and RDP session
+definitions are reserved but their adapters are not implemented yet.
 
 ## Security
 
@@ -34,9 +35,9 @@ observation on the same isolated network.
 
 Classic VNC password authentication and RFB framebuffer/input traffic are not
 encrypted. Use the VNC adapter only on a trusted network or through a separately
-secured tunnel. The password is read from a file and is never accepted as a
-command-line value, but classic VNC authentication still uses only its first
-eight bytes.
+secured tunnel. Each VNC session may use an inline `password` or its own
+`password_file`; classic VNC authentication still uses only the first eight
+password bytes.
 
 ## Build and test
 
@@ -51,6 +52,66 @@ make build
 The test suite includes byte-level operation encoding checks, ATR and HID input
 parsing, and a local UDP round trip which verifies packet sequencing, input
 dispatch and NACK retransmission.
+
+## Configuration
+
+Copy `config.yaml.template` to `config.yaml`, then adjust its VNC address and
+routing. Start the server with:
+
+```sh
+./sunrayd -config ./config.yaml -debug
+```
+
+The configuration contains four sections:
+
+- `server`: authentication listener, fallback resolution, packet pacing and
+  the optional smart-card probe;
+- `sessions`: named `card-test`, `vnc`, reserved `ssh`, or reserved `rdp`
+  definitions;
+- `routing.default`: fallback sessions for no card, an unknown physical card,
+  and exact card IDs;
+- `routing.terminals`: optional overrides keyed by Sun Ray serial number.
+
+Route matching is deterministic: terminal-specific exact card ID, global exact
+card ID, terminal card state, then global card state. Matching serial numbers
+and card IDs is case-insensitive. With the currently observed all-zero physical
+card ID, insertion selects `card_present`; a future real ID can be placed under
+`cards` without changing the session definitions.
+
+Relative `image`, `password_file`, and `private_key_file` paths are resolved
+from the directory containing the YAML file. Unknown YAML fields, invalid
+session references and malformed addresses cause startup to fail instead of
+being silently ignored.
+
+VNC credentials are configured per session, so different servers can use
+different passwords. For a simple private-LAN test, they may be written directly
+in the ignored local `config.yaml`:
+
+```yaml
+sessions:
+  office-vnc:
+    type: vnc
+    address: 192.168.30.10:5900
+    password: office-password
+  lab-vnc:
+    type: vnc
+    address: 192.168.30.11:5900
+    password: lab-password
+```
+
+Alternatively, give each session a separate `password_file`. `password` and
+`password_file` are mutually exclusive within one session. Keep `config.yaml`
+out of version control when it contains inline credentials; this repository's
+`.gitignore` already excludes it.
+
+`card-test` is a normal session type and can optionally use its own PNG/JPEG:
+
+```yaml
+sessions:
+  diagnostics:
+    type: card-test
+    image: ./assets/diagnostics.png
+```
 
 ## Run
 
@@ -92,6 +153,7 @@ is cropped to the terminal resolution.
 Useful flags:
 
 ```text
+-config ''
 -fallback-width 1280
 -fallback-height 1024
 -packet-delay 200us
@@ -100,11 +162,58 @@ Useful flags:
 -vnc-password-file ''
 ```
 
+Explicit legacy flags override their corresponding `server` YAML values.
+Passing `-vnc` creates a temporary `command-line-vnc` session and routes both
+card states to it, preserving the earlier one-command test workflow.
+
 The smart-card probe is disabled by default. It can still be enabled for later
 diagnostics with `-smartcard-listen :4120`.
 
 The server prefers the first resolution from the terminal's `startRes`
 property. The fallback is used only when that property is absent or invalid.
+
+## Docker Compose
+
+The included Compose deployment uses host networking because the server must
+observe the terminal address and exchange dynamic UDP display traffic. On a
+Linux Docker host:
+
+```sh
+cp config.yaml.template config.yaml
+# Edit config.yaml for the VNC target and routing.
+SUNRAY_CONFIG=./config.yaml docker compose up --build
+```
+
+For simple local testing, set `password` directly on each VNC session in
+`config.yaml`; no Compose secret is required. For a less exposed credential,
+copy `secrets/vnc_password.template` to a file outside version control, replace
+its contents, and set that session field to:
+
+```yaml
+password_file: /run/secrets/vnc_password
+```
+
+Point Compose at that source file when starting it:
+
+```sh
+SUNRAY_CONFIG=./config.yaml \
+SUNRAY_VNC_PASSWORD_FILE=/absolute/path/to/vnc_password \
+docker compose up --build
+```
+
+Compose mounts the password read-only as `/run/secrets/vnc_password`. The image
+runs as UID/GID 65534, so the source secret must be readable by that identity;
+on Linux it can be owned by `65534:65534` with mode `0400`. Some Compose engines
+implement file-backed secrets with bind mounts and ignore requested ownership
+metadata, so verify readability after changing its permissions. The `assets`
+directory is mounted at `/etc/sunray/assets` for optional card-test images. The
+local `config.yaml` and real secret files are excluded from the Docker build
+context. The runtime contains only the statically built server plus Debian slim.
+
+Docker Desktop requires host networking to be enabled explicitly. Because its
+LAN source-address and UDP behavior can differ from native Linux, macOS hardware
+testing should continue with the native binary unless the Docker Desktop path
+has been verified with the physical Sun Ray.
 
 ## Point the Sun Ray at the server
 
@@ -139,9 +248,10 @@ Expected log sequence:
 Sun Ray authentication server listening
 authentication client connected
 Sun Ray information ...
-session slot selected ... slot=no-card
+session selected ... slot=no-card session=card-test
 display channel opened ... terminal_udp=... server_udp=... resolution=...
-test image transmission complete
+session starting ... session=card-test type=card-test
+card-test session displayed ... session=card-test
 ```
 
 With `-vnc`, the test/card image remains visible while the connection is being
@@ -198,7 +308,8 @@ firmware pairs them with the definitive next `insert` state.
 - The terminal connects and logs its serial number and native resolution.
 - Inserting and removing a card changes the authentication event, even if the
   firmware reports an all-zero `card_id`.
-- Logs alternate reliably between `slot=no-card` and `slot=card-present`.
+- Logs alternate reliably between `slot=no-card` and `slot=card-present`, with
+  the configured session name.
 - Pressing and releasing a key logs matching HID transitions.
 - Moving, clicking and scrolling the mouse logs coordinates and button masks.
 - A configured VNC desktop replaces the test image after connection.

@@ -3,4 +3,7 @@
 *.pcap
 *.pcapng
 .DS_Store
-
+/config.yaml
+/secrets/*
+!/secrets/.gitkeep
+!/secrets/*.template

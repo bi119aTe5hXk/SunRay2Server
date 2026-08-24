@@ -1,0 +1,28 @@
+services:
+  sunrayd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sunray2server:local
+    network_mode: host
+    restart: unless-stopped
+    secrets:
+      - source: vnc_password
+        target: vnc_password
+    command:
+      - -config
+      - /etc/sunray/config.yaml
+      - -debug
+    volumes:
+      - type: bind
+        source: ${SUNRAY_CONFIG:-./config.yaml.template}
+        target: /etc/sunray/config.yaml
+        read_only: true
+      - type: bind
+        source: ${SUNRAY_ASSETS_DIR:-./assets}
+        target: /etc/sunray/assets
+        read_only: true
+
+secrets:
+  vnc_password:
+    file: ${SUNRAY_VNC_PASSWORD_FILE:-./secrets/vnc_password.template}

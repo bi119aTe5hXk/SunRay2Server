@@ -32,25 +32,27 @@ const (
 	maxDesktopName = 1 << 20
 )
 
-type frameHandler func(frame *image.RGBA, changed image.Rectangle, resized bool) error
+type frameHandler func(frame *image.RGBA, changed []image.Rectangle, resized bool) error
 
 type connection struct {
 	net.Conn
-	writeMu sync.Mutex
-	stateMu sync.RWMutex
-	width   int
-	height  int
-	frame   *image.RGBA
-	onFrame frameHandler
+	writeMu    sync.Mutex
+	stateMu    sync.RWMutex
+	width      int
+	height     int
+	viewWidth  int
+	viewHeight int
+	frame      *image.RGBA
+	onFrame    frameHandler
 }
 
-func dial(ctx context.Context, address, password string, onFrame frameHandler) (*connection, string, error) {
+func dial(ctx context.Context, address, password string, viewWidth, viewHeight int, onFrame frameHandler) (*connection, string, error) {
 	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	netConn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return nil, "", fmt.Errorf("dial VNC server: %w", err)
 	}
-	c := &connection{Conn: netConn, onFrame: onFrame}
+	c := &connection{Conn: netConn, viewWidth: viewWidth, viewHeight: viewHeight, onFrame: onFrame}
 	name, err := c.handshake(password)
 	if err != nil {
 		netConn.Close()
@@ -308,7 +310,7 @@ func (c *connection) setEncodings() error {
 }
 
 func (c *connection) requestUpdate(incremental bool) error {
-	width, height := c.size()
+	width, height := c.requestSize()
 	message := make([]byte, 10)
 	message[0] = 3
 	if incremental {
@@ -317,6 +319,24 @@ func (c *connection) requestUpdate(incremental bool) error {
 	binary.BigEndian.PutUint16(message[6:8], uint16(width))
 	binary.BigEndian.PutUint16(message[8:10], uint16(height))
 	return c.writeMessage(message, "request VNC framebuffer update")
+}
+
+func (c *connection) requestSize() (int, int) {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	width, height := c.width, c.height
+	if c.viewWidth > 0 {
+		width = min(width, c.viewWidth)
+	}
+	if c.viewHeight > 0 {
+		height = min(height, c.viewHeight)
+	}
+	return width, height
+}
+
+func (c *connection) visibleBounds() image.Rectangle {
+	width, height := c.requestSize()
+	return image.Rect(0, 0, width, height)
 }
 
 func (c *connection) writeMessage(message []byte, action string) error {
@@ -363,7 +383,7 @@ func (c *connection) readFramebufferUpdate() error {
 		return fmt.Errorf("read VNC framebuffer update header: %w", err)
 	}
 	count := int(binary.BigEndian.Uint16(header[1:3]))
-	var changed image.Rectangle
+	changed := make([]image.Rectangle, 0, count)
 	resized := false
 	for range count {
 		rectHeader := make([]byte, 12)
@@ -382,29 +402,29 @@ func (c *connection) readFramebufferUpdate() error {
 			if err := c.readRaw(rect); err != nil {
 				return err
 			}
-			changed = union(changed, rect)
+			changed = appendVisible(changed, rect, c.visibleBounds())
 		case encodingCopyRect:
 			if err := c.readCopyRect(rect); err != nil {
 				return err
 			}
-			changed = union(changed, rect)
+			changed = appendVisible(changed, rect, c.visibleBounds())
 		case encodingDesktopSize:
 			if err := validateSize(width, height); err != nil {
 				return err
 			}
 			c.setSize(width, height)
-			changed = image.Rect(0, 0, width, height)
+			changed = append(changed[:0], c.visibleBounds())
 			resized = true
 		default:
 			return fmt.Errorf("VNC server used unrequested encoding %d", encoding)
 		}
 	}
-	if changed.Empty() || c.onFrame == nil {
+	if len(changed) == 0 || c.onFrame == nil {
 		return nil
 	}
 	c.stateMu.RLock()
 	frame := c.frame
-	err := c.onFrame(frame, changed.Intersect(frame.Bounds()), resized)
+	err := c.onFrame(frame, changed, resized)
 	c.stateMu.RUnlock()
 	return err
 }
@@ -477,14 +497,12 @@ func (c *connection) skipServerCutText() error {
 	return err
 }
 
-func union(a, b image.Rectangle) image.Rectangle {
-	if a.Empty() {
-		return b
+func appendVisible(rectangles []image.Rectangle, changed, visible image.Rectangle) []image.Rectangle {
+	changed = changed.Intersect(visible)
+	if changed.Empty() {
+		return rectangles
 	}
-	if b.Empty() {
-		return a
-	}
-	return a.Union(b)
+	return append(rectangles, changed)
 }
 
 func (c *connection) sendKey(keysym uint32, pressed bool) error {

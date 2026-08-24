@@ -25,15 +25,17 @@ type Client struct {
 	delay  time.Duration
 	log    *slog.Logger
 
-	mu        sync.Mutex
-	renderMu  sync.Mutex
-	inputMu   sync.Mutex
-	packetSeq uint16
-	opSeq     uint16
-	history   map[uint16][]byte
-	closed    bool
-	decoder   inputDecoder
-	onInput   func(InputEvent)
+	mu                 sync.Mutex
+	renderMu           sync.Mutex
+	inputMu            sync.Mutex
+	packetSeq          uint16
+	opSeq              uint16
+	history            map[uint16][]byte
+	closed             bool
+	decoder            inputDecoder
+	onInput            func(InputEvent)
+	lastPointerLog     time.Time
+	lastPointerButtons uint8
 }
 
 // SetInputHandler installs the consumer used by a future SSH, VNC or RDP
@@ -206,16 +208,21 @@ func (c *Client) handlePacket(packet []byte) {
 }
 
 func (c *Client) dispatchInput(event InputEvent) {
-	if event.Kind == InputKey {
-		c.log.Debug("keyboard input", "hid", fmt.Sprintf("0x%02x", event.HID), "pressed", event.Pressed, "modifiers", fmt.Sprintf("0x%02x", event.Modifiers))
-	} else {
-		c.log.Debug("pointer input", "x", event.X, "y", event.Y, "buttons", fmt.Sprintf("0x%02x", event.Buttons))
-	}
 	c.inputMu.Lock()
 	handler := c.onInput
 	c.inputMu.Unlock()
 	if handler != nil {
 		handler(event)
+	}
+	if event.Kind == InputKey {
+		c.log.Debug("keyboard input", "hid", fmt.Sprintf("0x%02x", event.HID), "pressed", event.Pressed, "modifiers", fmt.Sprintf("0x%02x", event.Modifiers))
+		return
+	}
+	now := time.Now()
+	if event.Buttons != c.lastPointerButtons || now.Sub(c.lastPointerLog) >= 250*time.Millisecond {
+		c.log.Debug("pointer input", "x", event.X, "y", event.Y, "buttons", fmt.Sprintf("0x%02x", event.Buttons))
+		c.lastPointerLog = now
+		c.lastPointerButtons = event.Buttons
 	}
 }
 

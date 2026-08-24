@@ -20,7 +20,7 @@ type Config struct {
 	ScreenWidth  int
 	ScreenHeight int
 	Logger       *slog.Logger
-	OnFrame      func(frame *image.RGBA, changed image.Rectangle, resized bool) error
+	OnFrame      func(frame *image.RGBA, changed []image.Rectangle, resized bool) error
 }
 
 // Session maintains one reconnecting VNC client and accepts Sun Ray input even
@@ -43,7 +43,7 @@ func (s *Session) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		conn, desktop, err := dial(ctx, s.config.Address, s.config.Password, s.config.OnFrame)
+		conn, desktop, err := dial(ctx, s.config.Address, s.config.Password, s.config.ScreenWidth, s.config.ScreenHeight, s.config.OnFrame)
 		if err != nil {
 			s.config.Logger.Warn("VNC connection failed", "server", s.config.Address, "error", err)
 			if !waitForRetry(ctx) {

@@ -1,0 +1,8 @@
+.git
+.cache
+sunrayd
+config.yaml
+secrets/*
+!secrets/.gitkeep
+assets/*
+!assets/.gitkeep

@@ -1,0 +1,69 @@
+# SunRay2Server configuration template.
+# Copy this file to config.yaml and adjust the VNC address before deployment.
+version: 1
+
+server:
+  listen: ":7009"
+  fallback_width: 1280
+  fallback_height: 1024
+  packet_delay: 200us
+  smartcard_listen: ""
+
+sessions:
+  card-test:
+    type: card-test
+    # Optional PNG/JPEG. Relative paths are resolved from this config file.
+    # image: ./assets/card-test.png
+
+  example-vnc:
+    type: vnc
+    address: 192.168.30.10:5900
+    # Passwords belong to each session, so multiple VNC sessions may use
+    # different values. Leave both fields empty for Security None. For simple
+    # private-LAN testing, uncomment the following line:
+    # password: change-me
+    # For a deployed system, prefer a mounted secret instead. Do not set both.
+    # password_file: /run/secrets/vnc_password
+
+  # second-vnc:
+  #   type: vnc
+  #   address: 192.168.30.11:5900
+  #   password: another-password
+
+  # SSH and RDP are reserved session types. They validate now so routes can be
+  # prepared, but selecting one displays NOT IMPLEMENTED until its adapter is
+  # added (directly or through guacd).
+  # example-ssh:
+  #   type: ssh
+  #   hostname: 192.168.30.20
+  #   port: 22
+  #   username: user
+  #   private_key_file: /run/secrets/ssh_private_key
+  #
+  # example-rdp:
+  #   type: rdp
+  #   hostname: 192.168.30.30
+  #   port: 3389
+  #   username: user
+  #   password_file: /run/secrets/rdp_password
+
+routing:
+  # Current Sun Ray 2 behavior:
+  #   no_card      = pseudo token, no physical card inserted
+  #   card_present = physical card detected, even when its ID is all zeroes
+  default:
+    no_card: card-test
+    card_present: example-vnc
+
+    # Exact IDs override card_present when the terminal can report a real ID.
+    # cards:
+    #   "0x0123456789abcdef": example-vnc
+
+  # Terminal-specific routes override the defaults above. Matching is
+  # case-insensitive. Exact terminal card IDs have the highest priority.
+  terminals:
+    "00144fd19044":
+      no_card: card-test
+      card_present: example-vnc
+      # cards:
+      #   "0x0123456789abcdef": example-vnc

@@ -12,10 +12,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
+	appconfig "sunray2server/internal/config"
 	"sunray2server/internal/display"
 	"sunray2server/internal/server"
 	"sunray2server/internal/smartcard"
@@ -23,6 +23,7 @@ import (
 
 func main() {
 	var (
+		configPath      = flag.String("config", "", "YAML configuration file")
 		listen          = flag.String("listen", ":7009", "TCP authentication listen address")
 		imagePath       = flag.String("image", "", "PNG or JPEG to display; empty uses the generated test pattern")
 		width           = flag.Int("fallback-width", 1280, "screen width when startRes is absent")
@@ -34,19 +35,54 @@ func main() {
 		debug           = flag.Bool("debug", false, "enable debug logging")
 	)
 	flag.Parse()
+	overridden := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { overridden[f.Name] = true })
 
 	level := slog.LevelInfo
 	if *debug {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-	vncPassword, err := loadPassword(*vncPasswordFile)
-	if err != nil {
-		logger.Error("unable to load VNC password", "error", err)
+
+	configuration := appconfig.Default()
+	var err error
+	if *configPath != "" {
+		configuration, err = appconfig.Load(*configPath)
+		if err != nil {
+			logger.Error("unable to load configuration", "error", err)
+			os.Exit(2)
+		}
+	}
+	if overridden["listen"] {
+		configuration.Server.Listen = *listen
+	}
+	if overridden["fallback-width"] {
+		configuration.Server.FallbackWidth = *width
+	}
+	if overridden["fallback-height"] {
+		configuration.Server.FallbackHeight = *height
+	}
+	if overridden["packet-delay"] {
+		configuration.Server.PacketDelay = *packetDelay
+	}
+	if overridden["smartcard-listen"] {
+		configuration.Server.SmartcardListen = *smartcardListen
+	}
+	if *vncAddress != "" {
+		configuration.Sessions["command-line-vnc"] = appconfig.Session{
+			Type:         "vnc",
+			Address:      *vncAddress,
+			PasswordFile: *vncPasswordFile,
+		}
+		configuration.Routing.Default.NoCard = "command-line-vnc"
+		configuration.Routing.Default.CardPresent = "command-line-vnc"
+	} else if overridden["vnc-password-file"] {
+		logger.Error("-vnc-password-file requires -vnc")
 		os.Exit(2)
 	}
-	if len([]byte(vncPassword)) > 8 {
-		logger.Warn("classic VNC authentication uses only the first 8 password bytes")
+	if err := configuration.Validate(); err != nil {
+		logger.Error("invalid effective configuration", "error", err)
+		os.Exit(2)
 	}
 
 	img, err := loadImage(*imagePath)
@@ -59,14 +95,13 @@ func main() {
 	}
 
 	srv, err := server.New(server.Config{
-		ListenAddress:  *listen,
-		FallbackWidth:  *width,
-		FallbackHeight: *height,
-		PacketDelay:    *packetDelay,
+		ListenAddress:  configuration.Server.Listen,
+		FallbackWidth:  configuration.Server.FallbackWidth,
+		FallbackHeight: configuration.Server.FallbackHeight,
+		PacketDelay:    configuration.Server.PacketDelay,
 		Image:          img,
 		Logger:         logger,
-		VNCAddress:     *vncAddress,
-		VNCPassword:    vncPassword,
+		AppConfig:      configuration,
 	})
 	if err != nil {
 		logger.Error("invalid server configuration", "error", err)
@@ -81,9 +116,9 @@ func main() {
 	go func() {
 		results <- srv.Serve(ctx)
 	}()
-	if *smartcardListen != "" {
+	if configuration.Server.SmartcardListen != "" {
 		serviceCount++
-		probe := &smartcard.Probe{ListenAddress: *smartcardListen, Logger: logger}
+		probe := &smartcard.Probe{ListenAddress: configuration.Server.SmartcardListen, Logger: logger}
 		go func() {
 			results <- probe.Serve(ctx)
 		}()
@@ -100,17 +135,6 @@ func main() {
 		logger.Error("service stopped", "error", firstErr)
 		os.Exit(1)
 	}
-}
-
-func loadPassword(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
-	}
-	return strings.TrimRight(string(contents), "\r\n"), nil
 }
 
 func loadImage(path string) (image.Image, error) {
