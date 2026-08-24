@@ -53,6 +53,47 @@ func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error
 	return nil
 }
 
+// ShowImageRegion updates only a changed portion of an image. The image uses
+// the same centered/cropped placement as ShowImage, allowing remote framebuffer
+// updates to avoid retransmitting the entire screen.
+func (c *Client) ShowImageRegion(screenWidth, screenHeight int, img image.Image, changed image.Rectangle) error {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
+	if screenWidth < 1 || screenHeight < 1 {
+		return fmt.Errorf("invalid screen size %dx%d", screenWidth, screenHeight)
+	}
+	if img == nil || img.Bounds().Empty() {
+		return fmt.Errorf("image is empty")
+	}
+
+	source := img.Bounds()
+	visibleWidth := min(source.Dx(), screenWidth)
+	visibleHeight := min(source.Dy(), screenHeight)
+	visible := image.Rect(source.Min.X, source.Min.Y, source.Min.X+visibleWidth, source.Min.Y+visibleHeight)
+	changed = changed.Intersect(visible)
+	if changed.Empty() {
+		return nil
+	}
+	offset := image.Pt((screenWidth-visibleWidth)/2-source.Min.X, (screenHeight-visibleHeight)/2-source.Min.Y)
+
+	tileWidth, tileHeight := bestTileSize(changed.Dx(), changed.Dy())
+	for y := changed.Min.Y; y < changed.Max.Y; y += tileHeight {
+		h := min(tileHeight, changed.Max.Y-y)
+		for x := changed.Min.X; x < changed.Max.X; x += tileWidth {
+			w := min(tileWidth, changed.Max.X-x)
+			rect := image.Rect(x, y, x+w, y+h)
+			op, err := BitmapRGB(img, rect, image.Pt(x+offset.X, y+offset.Y))
+			if err != nil {
+				return err
+			}
+			if err := c.Send(op); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func bestTileSize(width, height int) (int, int) {
 	bestW, bestH := 1, 1
 	bestPackets := width * height

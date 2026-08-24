@@ -28,8 +28,12 @@ type InputEvent struct {
 }
 
 type inputDecoder struct {
-	keys      [256]bool
-	modifiers uint8
+	keys           [256]bool
+	modifiers      uint8
+	pointerSeen    bool
+	pointerX       uint16
+	pointerY       uint16
+	pointerButtons uint8
 }
 
 var modifierHID = [8]uint8{0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7}
@@ -79,18 +83,22 @@ func (d *inputDecoder) keyboard(operation []byte) ([]InputEvent, error) {
 	return events, nil
 }
 
-func (d *inputDecoder) pointer(operation []byte) (InputEvent, error) {
+func (d *inputDecoder) pointer(operation []byte) (InputEvent, bool, error) {
 	if len(operation) < 12 || operation[0] != 0xC2 {
-		return InputEvent{}, fmt.Errorf("short or invalid pointer operation: %d bytes", len(operation))
+		return InputEvent{}, false, fmt.Errorf("short or invalid pointer operation: %d bytes", len(operation))
 	}
 	// Bit 6 is always set by the Sun Ray firmware and is not a mouse button.
 	buttons := uint8(binary.BigEndian.Uint16(operation[4:6])) & 0x1F
-	return InputEvent{
+	event := InputEvent{
 		Kind:    InputPointer,
 		X:       binary.BigEndian.Uint16(operation[6:8]),
 		Y:       binary.BigEndian.Uint16(operation[8:10]),
 		Buttons: buttons,
-	}, nil
+	}
+	changed := !d.pointerSeen || event.X != d.pointerX || event.Y != d.pointerY || event.Buttons != d.pointerButtons
+	d.pointerSeen = true
+	d.pointerX, d.pointerY, d.pointerButtons = event.X, event.Y, event.Buttons
+	return event, changed, nil
 }
 
 func keyInput(hid uint8, pressed bool, modifiers uint8) InputEvent {

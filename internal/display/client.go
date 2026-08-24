@@ -172,12 +172,16 @@ func (c *Client) handlePacket(packet []byte) {
 				c.log.Warn("ignored short pointer input", "bytes", len(packet)-offset)
 				return
 			}
-			event, err := c.decoder.pointer(packet[offset : offset+12])
+			c.inputMu.Lock()
+			event, changed, err := c.decoder.pointer(packet[offset : offset+12])
+			c.inputMu.Unlock()
 			if err != nil {
 				c.log.Warn("ignored invalid pointer input", "error", err)
 				return
 			}
-			c.dispatchInput(event)
+			if changed {
+				c.dispatchInput(event)
+			}
 			offset += 12
 		case 0xC4:
 			if offset+16 > len(packet) {

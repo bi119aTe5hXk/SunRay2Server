@@ -54,12 +54,16 @@ func TestPointerReport(t *testing.T) {
 	binary.BigEndian.PutUint16(operation[6:8], 320)
 	binary.BigEndian.PutUint16(operation[8:10], 200)
 
-	event, err := new(inputDecoder).pointer(operation)
+	decoder := new(inputDecoder)
+	event, changed, err := decoder.pointer(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event.Kind != InputPointer || event.X != 320 || event.Y != 200 || event.Buttons != 5 {
+	if !changed || event.Kind != InputPointer || event.X != 320 || event.Y != 200 || event.Buttons != 5 {
 		t.Fatalf("unexpected pointer event: %#v", event)
+	}
+	if _, changed, err := decoder.pointer(operation); err != nil || changed {
+		t.Fatalf("unchanged pointer report: changed=%v err=%v", changed, err)
 	}
 }
 
@@ -68,7 +72,7 @@ func TestRejectsShortInputOperations(t *testing.T) {
 	if _, err := decoder.keyboard([]byte{0xC1}); err == nil {
 		t.Fatal("expected short keyboard operation to fail")
 	}
-	if _, err := decoder.pointer([]byte{0xC2}); err == nil {
+	if _, _, err := decoder.pointer([]byte{0xC2}); err == nil {
 		t.Fatal("expected short pointer operation to fail")
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,8 @@ func main() {
 		height          = flag.Int("fallback-height", 1024, "screen height when startRes is absent")
 		packetDelay     = flag.Duration("packet-delay", 200*time.Microsecond, "delay between UDP display packets")
 		smartcardListen = flag.String("smartcard-listen", "", "passive TCP smart-card probe listen address; empty disables it")
+		vncAddress      = flag.String("vnc", "", "VNC server address (for example 192.168.1.10:5900); empty shows the test image")
+		vncPasswordFile = flag.String("vnc-password-file", "", "file containing the classic VNC password")
 		debug           = flag.Bool("debug", false, "enable debug logging")
 	)
 	flag.Parse()
@@ -37,6 +40,14 @@ func main() {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	vncPassword, err := loadPassword(*vncPasswordFile)
+	if err != nil {
+		logger.Error("unable to load VNC password", "error", err)
+		os.Exit(2)
+	}
+	if len([]byte(vncPassword)) > 8 {
+		logger.Warn("classic VNC authentication uses only the first 8 password bytes")
+	}
 
 	img, err := loadImage(*imagePath)
 	if err != nil {
@@ -54,6 +65,8 @@ func main() {
 		PacketDelay:    *packetDelay,
 		Image:          img,
 		Logger:         logger,
+		VNCAddress:     *vncAddress,
+		VNCPassword:    vncPassword,
 	})
 	if err != nil {
 		logger.Error("invalid server configuration", "error", err)
@@ -87,6 +100,17 @@ func main() {
 		logger.Error("service stopped", "error", firstErr)
 		os.Exit(1)
 	}
+}
+
+func loadPassword(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	return strings.TrimRight(string(contents), "\r\n"), nil
 }
 
 func loadImage(path string) (image.Image, error) {

@@ -17,6 +17,7 @@ import (
 
 	"sunray2server/internal/auth"
 	"sunray2server/internal/display"
+	"sunray2server/internal/vnc"
 )
 
 type Config struct {
@@ -26,6 +27,8 @@ type Config struct {
 	PacketDelay    time.Duration
 	Image          image.Image
 	Logger         *slog.Logger
+	VNCAddress     string
+	VNCPassword    string
 }
 
 type Server struct {
@@ -39,6 +42,8 @@ type activeDisplay struct {
 	client *display.Client
 	width  int
 	height int
+	cancel context.CancelFunc
+	remote bool
 }
 
 func New(config Config) (*Server, error) {
@@ -158,7 +163,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				return
 			}
 		case "connRsp":
-			if err := s.startDisplay(clientKey, remoteIP, properties, logger); err != nil {
+			if err := s.startDisplay(ctx, clientKey, remoteIP, properties, logger); err != nil {
 				logger.Error("display startup failed", "error", err)
 			}
 		default:
@@ -199,7 +204,7 @@ func (s *Server) selectSessionSlot(key, slot, cardType, cardID string, logger *s
 	logger.Info("session slot selected", "slot", slot, "previous", previous, "card_type", cardType, "card_id", cardID)
 }
 
-func (s *Server) startDisplay(key string, remoteIP net.IP, properties map[string]string, logger *slog.Logger) error {
+func (s *Server) startDisplay(ctx context.Context, key string, remoteIP net.IP, properties map[string]string, logger *slog.Logger) error {
 	port, err := strconv.Atoi(properties["pn"])
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("invalid terminal display port pn=%q", properties["pn"])
@@ -210,10 +215,14 @@ func (s *Server) startDisplay(key string, remoteIP net.IP, properties map[string
 		return err
 	}
 
+	displayCtx, cancelDisplay := context.WithCancel(ctx)
 	s.mu.Lock()
 	old := s.active[key]
-	s.active[key] = activeDisplay{client: client, width: width, height: height}
+	s.active[key] = activeDisplay{client: client, width: width, height: height, cancel: cancelDisplay, remote: s.config.VNCAddress != ""}
 	s.mu.Unlock()
+	if old.cancel != nil {
+		old.cancel()
+	}
 	if old.client != nil {
 		old.client.Close()
 	}
@@ -236,15 +245,38 @@ func (s *Server) startDisplay(key string, remoteIP net.IP, properties map[string
 			return
 		}
 		logger.Info("test image transmission complete")
+		if s.config.VNCAddress != "" && displayCtx.Err() == nil {
+			s.startVNC(displayCtx, client, width, height, logger)
+		}
 	}()
 	return nil
+}
+
+func (s *Server) startVNC(ctx context.Context, client *display.Client, screenWidth, screenHeight int, logger *slog.Logger) {
+	firstFrame := true
+	session := vnc.NewSession(vnc.Config{
+		Address:      s.config.VNCAddress,
+		Password:     s.config.VNCPassword,
+		ScreenWidth:  screenWidth,
+		ScreenHeight: screenHeight,
+		Logger:       logger,
+		OnFrame: func(frame *image.RGBA, changed image.Rectangle, resized bool) error {
+			if firstFrame || resized {
+				firstFrame = false
+				return client.ShowImage(screenWidth, screenHeight, frame)
+			}
+			return client.ShowImageRegion(screenWidth, screenHeight, frame, changed)
+		},
+	})
+	client.SetInputHandler(session.HandleInput)
+	session.Run(ctx)
 }
 
 func (s *Server) showCardStatus(key, cardType, cardID, event string, logger *slog.Logger) {
 	s.mu.Lock()
 	active, ok := s.active[key]
 	s.mu.Unlock()
-	if !ok || active.client == nil {
+	if !ok || active.client == nil || active.remote {
 		return
 	}
 	go func() {
@@ -276,6 +308,9 @@ func (s *Server) closeClient(key string) {
 	active := s.active[key]
 	delete(s.active, key)
 	s.mu.Unlock()
+	if active.cancel != nil {
+		active.cancel()
+	}
 	if active.client != nil {
 		active.client.Close()
 	}
@@ -288,6 +323,9 @@ func (s *Server) closeAll() {
 	s.selected = make(map[string]string)
 	s.mu.Unlock()
 	for _, active := range clients {
+		if active.cancel != nil {
+			active.cancel()
+		}
 		active.client.Close()
 	}
 }

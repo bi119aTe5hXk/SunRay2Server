@@ -18,10 +18,10 @@ milestone implements only enough of the kOpenRay-compatible protocol to:
 - passively capture the initial Sun Ray smart-card service traffic on TCP 4120
   and recognize valid ISO 7816 ATR byte strings when explicitly enabled.
 
-SSH, VNC, RDP and persistent card registration are not connected yet. The input
-events and two session slots are the common foundation for those adapters; VNC
-is the next target because its framebuffer and input model map directly to the
-working Sun Ray display channel.
+VNC is the first connected remote-session adapter. SSH, RDP and persistent card
+registration are not connected yet. The two card states are detected as session
+slots, but this first VNC milestone uses one configured VNC target for both;
+binding a different adapter or target to each slot is the next step.
 
 ## Security
 
@@ -31,6 +31,12 @@ trusted LAN or VLAN. Do not expose TCP 7009 or the UDP display traffic to the
 internet. The disabled-by-default smart-card probe on TCP 4120 is read-only: it sends no
 PC/SC response and no APDU to the card. It is intended only for protocol
 observation on the same isolated network.
+
+Classic VNC password authentication and RFB framebuffer/input traffic are not
+encrypted. Use the VNC adapter only on a trusted network or through a separately
+secured tunnel. The password is read from a file and is never accepted as a
+command-line value, but classic VNC authentication still uses only its first
+eight bytes.
 
 ## Build and test
 
@@ -60,6 +66,29 @@ With an existing PNG or JPEG:
 ./sunrayd -listen :7009 -image /absolute/path/to/test.png -debug
 ```
 
+Connect to a VNC server without authentication:
+
+```sh
+./sunrayd -listen :7009 -vnc 192.168.30.10:5900 -debug
+```
+
+For a server using classic VNC Password authentication, create a password file
+containing only the password, restrict its filesystem permissions, then run:
+
+```sh
+./sunrayd -listen :7009 \
+  -vnc 192.168.30.10:5900 \
+  -vnc-password-file /absolute/path/to/vnc-password \
+  -debug
+```
+
+The VNC client negotiates RFB 3.3, 3.7 or 3.8 and supports Security None,
+classic VNC authentication, Raw, CopyRect and DesktopSize. TLS/VeNCrypt and
+compressed encodings such as Tight, ZRLE and Hextile are not part of this first
+milestone. Configure the VNC server to permit one of the supported security
+types. A smaller VNC desktop is centered on the Sun Ray display; a larger one
+is cropped to the terminal resolution.
+
 Useful flags:
 
 ```text
@@ -67,6 +96,8 @@ Useful flags:
 -fallback-height 1024
 -packet-delay 200us
 -smartcard-listen ''
+-vnc ''
+-vnc-password-file ''
 ```
 
 The smart-card probe is disabled by default. It can still be enabled for later
@@ -112,6 +143,15 @@ session slot selected ... slot=no-card
 display channel opened ... terminal_udp=... server_udp=... resolution=...
 test image transmission complete
 ```
+
+With `-vnc`, the test/card image remains visible while the connection is being
+established. A successful connection then logs:
+
+```text
+VNC session connected ... server=192.168.30.10:5900 desktop=... resolution=(...,...)
+```
+
+The session automatically reconnects after network or VNC server failures.
 
 With `-debug`, keyboard and pointer activity should now produce structured
 lines such as:
@@ -161,6 +201,9 @@ firmware pairs them with the definitive next `insert` state.
 - Logs alternate reliably between `slot=no-card` and `slot=card-present`.
 - Pressing and releasing a key logs matching HID transitions.
 - Moving, clicking and scrolling the mouse logs coordinates and button masks.
+- A configured VNC desktop replaces the test image after connection.
+- Keyboard, pointer buttons, movement and wheel events reach the VNC server.
+- Restarting the VNC server causes an automatic reconnect without restarting `sunrayd`.
 - Removing the card returns the panel to `READER READY` without restarting the server.
 - The generated test pattern is centered and has correct RGB colors.
 - No bands, stale regions or persistent corruption remain after retransmits.
