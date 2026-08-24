@@ -47,12 +47,16 @@ sessions:
   #   username: user
   #   password: change-me
   #   insecure_ignore_host_key: true
+  #   # Optional UTF-8 font. Relative paths resolve from this config file.
+  #   # Use a monospace CJK/Powerline font when those glyphs are needed.
+  #   font_file: ./assets/NotoSansMonoCJK-Regular.otf
+  #   font_size: 20
   #   # known_hosts_file: /run/secrets/ssh_known_hosts
   #   # host_key_sha256: SHA256:replace-with-server-fingerprint
   #   private_key_file: /run/secrets/ssh_private_key
   #
   # RDP remains reserved. Selecting it displays NOT IMPLEMENTED until its
-  # adapter is added (directly or through guacd).
+  # adapter is added.
   # example-rdp:
   #   type: rdp
   #   hostname: 192.168.30.30

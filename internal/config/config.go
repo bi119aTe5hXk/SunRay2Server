@@ -36,18 +36,20 @@ type Server struct {
 }
 
 type Session struct {
-	Type                  string `yaml:"type"`
-	Address               string `yaml:"address,omitempty"`
-	Image                 string `yaml:"image,omitempty"`
-	Hostname              string `yaml:"hostname,omitempty"`
-	Port                  int    `yaml:"port,omitempty"`
-	Username              string `yaml:"username,omitempty"`
-	Password              string `yaml:"password,omitempty"`
-	PasswordFile          string `yaml:"password_file,omitempty"`
-	PrivateKeyFile        string `yaml:"private_key_file,omitempty"`
-	KnownHostsFile        string `yaml:"known_hosts_file,omitempty"`
-	HostKeySHA256         string `yaml:"host_key_sha256,omitempty"`
-	InsecureIgnoreHostKey bool   `yaml:"insecure_ignore_host_key,omitempty"`
+	Type                  string  `yaml:"type"`
+	Address               string  `yaml:"address,omitempty"`
+	Image                 string  `yaml:"image,omitempty"`
+	Hostname              string  `yaml:"hostname,omitempty"`
+	Port                  int     `yaml:"port,omitempty"`
+	Username              string  `yaml:"username,omitempty"`
+	Password              string  `yaml:"password,omitempty"`
+	PasswordFile          string  `yaml:"password_file,omitempty"`
+	PrivateKeyFile        string  `yaml:"private_key_file,omitempty"`
+	KnownHostsFile        string  `yaml:"known_hosts_file,omitempty"`
+	HostKeySHA256         string  `yaml:"host_key_sha256,omitempty"`
+	InsecureIgnoreHostKey bool    `yaml:"insecure_ignore_host_key,omitempty"`
+	FontFile              string  `yaml:"font_file,omitempty"`
+	FontSize              float64 `yaml:"font_size,omitempty"`
 }
 
 type Routing struct {
@@ -120,6 +122,9 @@ func (c *Config) applyDefaults() {
 		if session.Type == "ssh" && session.Port == 0 {
 			session.Port = 22
 		}
+		if session.Type == "ssh" && session.FontSize == 0 {
+			session.FontSize = 20
+		}
 		if session.Type == "rdp" && session.Port == 0 {
 			session.Port = 3389
 		}
@@ -133,6 +138,7 @@ func (c *Config) resolveRelativePaths(base string) {
 		session.PasswordFile = resolvePath(base, session.PasswordFile)
 		session.PrivateKeyFile = resolvePath(base, session.PrivateKeyFile)
 		session.KnownHostsFile = resolvePath(base, session.KnownHostsFile)
+		session.FontFile = resolvePath(base, session.FontFile)
 		c.Sessions[name] = session
 	}
 }
@@ -208,6 +214,9 @@ func (c *Config) Validate() error {
 				}
 				if session.Password == "" && session.PasswordFile == "" && session.PrivateKeyFile == "" {
 					return fmt.Errorf("session %q requires password, password_file, or private_key_file", name)
+				}
+				if session.FontSize != 0 && (session.FontSize < 8 || session.FontSize > 72) {
+					return fmt.Errorf("session %q has invalid font_size %.1f (want 8 through 72)", name, session.FontSize)
 				}
 			}
 		default:

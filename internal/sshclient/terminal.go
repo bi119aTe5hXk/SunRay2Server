@@ -9,26 +9,20 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
-	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
 
-const (
-	fontWidth  = 7
-	fontHeight = 13
-	fontScale  = 2
-	cellWidth  = fontWidth * fontScale
-	cellHeight = fontHeight * fontScale
-)
-
 type cell struct {
-	rune    rune
-	fg      uint8
-	bg      uint8
-	bold    bool
-	inverse bool
+	rune         rune
+	fg           uint8
+	bg           uint8
+	bold         bool
+	inverse      bool
+	continuation bool
 }
 
 type terminal struct {
@@ -50,16 +44,17 @@ type terminal struct {
 	csi          []byte
 	pendingUTF8  []byte
 	dirty        []bool
-	dirtySignal  chan struct{}
+	cellWidth    int
+	cellHeight   int
 }
 
-func newTerminal(pixelWidth, pixelHeight int) *terminal {
-	cols := max(1, pixelWidth/cellWidth)
-	rows := max(1, pixelHeight/cellHeight)
+func newTerminalWithFont(pixelWidth, pixelHeight int, terminalFont *terminalFont) *terminal {
+	cols := max(1, pixelWidth/terminalFont.cellWidth)
+	rows := max(1, pixelHeight/terminalFont.cellHeight)
 	t := &terminal{
 		cols: cols, rows: rows, cells: make([]cell, cols*rows),
 		fg: 7, bg: 0, scrollBottom: rows - 1,
-		dirty: make([]bool, rows), dirtySignal: make(chan struct{}, 1),
+		dirty: make([]bool, rows), cellWidth: terminalFont.cellWidth, cellHeight: terminalFont.cellHeight,
 	}
 	t.clearAll()
 	return t
@@ -126,20 +121,13 @@ func (t *terminal) Write(p []byte) (int, error) {
 			}
 			i++
 		case 5:
-			// Character-set selection (for example ESC ( B). The first
-			// milestone renders the normal ASCII set, so consume the selector.
+			// Character-set selection (for example ESC ( B). Glyph selection is
+			// handled by the configured Unicode font, so consume the selector.
 			t.state = 0
 			i++
 		}
 	}
-	dirty := t.hasDirtyLocked()
 	t.mu.Unlock()
-	if dirty {
-		select {
-		case t.dirtySignal <- struct{}{}:
-		default:
-		}
-	}
 	return inputLength, nil
 }
 
@@ -149,6 +137,10 @@ func (t *terminal) control(b byte) {
 		t.markRow(t.cursorY)
 		t.cursorX = 0
 	case '\n', '\v', '\f':
+		// SSH PTYs normally translate LF to CRLF through ONLCR. Some servers
+		// still emit a bare LF, so use newline mode here to avoid stair-stepped
+		// shell output while remaining harmless for an existing CRLF pair.
+		t.cursorX = 0
 		t.lineFeed()
 	case '\b':
 		t.markRow(t.cursorY)
@@ -279,16 +271,59 @@ func (t *terminal) putRune(r rune) {
 	if r < 0x20 {
 		return
 	}
-	if r > 0x7E {
-		r = utf8.RuneError
+	width := runeDisplayWidth(r)
+	if width == 0 {
+		return
+	}
+	if width == 2 && t.cursorX == t.cols-1 {
+		t.cursorX = 0
+		t.lineFeed()
 	}
 	t.markRow(t.cursorY)
+	t.clearWideCell(t.cursorY, t.cursorX)
+	if width == 2 {
+		t.clearWideCell(t.cursorY, t.cursorX+1)
+	}
 	t.cells[t.cursorY*t.cols+t.cursorX] = cell{rune: r, fg: t.fg, bg: t.bg, bold: t.bold, inverse: t.inverse}
-	t.cursorX++
+	if width == 2 && t.cursorX+1 < t.cols {
+		t.cells[t.cursorY*t.cols+t.cursorX+1] = cell{
+			rune: ' ', fg: t.fg, bg: t.bg, bold: t.bold, inverse: t.inverse, continuation: true,
+		}
+	}
+	t.cursorX += width
 	if t.cursorX >= t.cols {
 		t.cursorX = 0
 		t.lineFeed()
 	}
+}
+
+func (t *terminal) clearWideCell(row, col int) {
+	if row < 0 || row >= t.rows || col < 0 || col >= t.cols {
+		return
+	}
+	index := row*t.cols + col
+	if t.cells[index].continuation && col > 0 {
+		t.cells[index-1] = t.blankCell()
+	}
+	if runeDisplayWidth(t.cells[index].rune) == 2 && col+1 < t.cols {
+		t.cells[index+1] = t.blankCell()
+	}
+	t.cells[index] = t.blankCell()
+}
+
+func runeDisplayWidth(r rune) int {
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == 0x200D {
+		return 0
+	}
+	if r >= 0x1100 && (r <= 0x115F || r == 0x2329 || r == 0x232A ||
+		r >= 0x2E80 && r <= 0xA4CF && r != 0x303F ||
+		r >= 0xAC00 && r <= 0xD7A3 || r >= 0xF900 && r <= 0xFAFF ||
+		r >= 0xFE10 && r <= 0xFE19 || r >= 0xFE30 && r <= 0xFE6F ||
+		r >= 0xFF00 && r <= 0xFF60 || r >= 0xFFE0 && r <= 0xFFE6 ||
+		r >= 0x1F300 && r <= 0x1FAFF || r >= 0x20000 && r <= 0x3FFFD) {
+		return 2
+	}
+	return 1
 }
 
 func (t *terminal) lineFeed() {
@@ -411,7 +446,8 @@ func (t *terminal) sgr(params []int) {
 	if len(params) == 0 {
 		params = []int{0}
 	}
-	for _, value := range params {
+	for index := 0; index < len(params); index++ {
+		value := params[index]
 		switch {
 		case value == 0:
 			t.fg, t.bg, t.bold, t.inverse = 7, 0, false, false
@@ -435,9 +471,59 @@ func (t *terminal) sgr(params []int) {
 			t.fg = uint8(value - 90 + 8)
 		case value >= 100 && value <= 107:
 			t.bg = uint8(value - 100 + 8)
+		case value == 38 || value == 48:
+			colorIndex, consumed, ok := extendedColor(params[index+1:])
+			if ok {
+				if value == 38 {
+					t.fg = colorIndex
+				} else {
+					t.bg = colorIndex
+				}
+				index += consumed
+			}
 		}
 	}
 }
+
+func extendedColor(params []int) (uint8, int, bool) {
+	if len(params) >= 2 && params[0] == 5 {
+		red, green, blue := xtermColor(params[1])
+		return nearestPalette(red, green, blue), 2, true
+	}
+	if len(params) >= 4 && params[0] == 2 {
+		return nearestPalette(byte(clampByte(params[1])), byte(clampByte(params[2])), byte(clampByte(params[3]))), 4, true
+	}
+	return 0, 0, false
+}
+
+func xtermColor(index int) (byte, byte, byte) {
+	index = min(max(index, 0), 255)
+	if index < 16 {
+		value := palette[index]
+		return value.R, value.G, value.B
+	}
+	if index < 232 {
+		index -= 16
+		levels := [6]byte{0, 95, 135, 175, 215, 255}
+		return levels[index/36], levels[index/6%6], levels[index%6]
+	}
+	gray := byte(8 + (index-232)*10)
+	return gray, gray, gray
+}
+
+func nearestPalette(red, green, blue byte) uint8 {
+	best, bestDistance := 0, int(^uint(0)>>1)
+	for index, candidate := range palette {
+		dr, dg, db := int(red)-int(candidate.R), int(green)-int(candidate.G), int(blue)-int(candidate.B)
+		distance := dr*dr + dg*dg + db*db
+		if distance < bestDistance {
+			best, bestDistance = index, distance
+		}
+	}
+	return uint8(best)
+}
+
+func clampByte(value int) int { return min(max(value, 0), 255) }
 
 func (t *terminal) moveCursor(row, col int) {
 	t.markRow(t.cursorY)
@@ -498,15 +584,16 @@ type terminalRenderer struct {
 	offsetX, offsetY int
 	frame            *image.RGBA
 	first            bool
+	font             *terminalFont
 }
 
-func newTerminalRenderer(width, height, cols, rows int) *terminalRenderer {
+func newTerminalRendererWithFont(width, height, cols, rows int, terminalFont *terminalFont) *terminalRenderer {
 	frame := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(frame, frame.Bounds(), image.NewUniform(palette[0]), image.Point{}, draw.Src)
 	return &terminalRenderer{
 		width: width, height: height,
-		offsetX: (width - cols*cellWidth) / 2, offsetY: (height - rows*cellHeight) / 2,
-		frame: frame, first: true,
+		offsetX: (width - cols*terminalFont.cellWidth) / 2, offsetY: (height - rows*terminalFont.cellHeight) / 2,
+		frame: frame, first: true, font: terminalFont,
 	}
 }
 
@@ -541,7 +628,7 @@ func (r *terminalRenderer) render(t *terminal) (*image.RGBA, []image.Rectangle, 
 }
 
 func (r *terminalRenderer) rowBand(start, end int) image.Rectangle {
-	return image.Rect(r.offsetX, r.offsetY+start*cellHeight, r.offsetX+r.widthCells(), r.offsetY+end*cellHeight).Intersect(r.frame.Bounds())
+	return image.Rect(r.offsetX, r.offsetY+start*r.font.cellHeight, r.offsetX+r.widthCells(), r.offsetY+end*r.font.cellHeight).Intersect(r.frame.Bounds())
 }
 
 func (r *terminalRenderer) widthCells() int {
@@ -549,6 +636,8 @@ func (r *terminalRenderer) widthCells() int {
 }
 
 func (r *terminalRenderer) renderRow(t *terminal, row int) {
+	// Paint all cell backgrounds before drawing glyphs. A full-width glyph can
+	// extend into its continuation cell and must not be erased afterward.
 	for col := 0; col < t.cols; col++ {
 		value := t.cells[row*t.cols+col]
 		fg, bg := value.fg, value.bg
@@ -558,10 +647,25 @@ func (r *terminalRenderer) renderRow(t *terminal, row int) {
 		if value.inverse || row == t.cursorY && col == t.cursorX {
 			fg, bg = bg, fg
 		}
-		x := r.offsetX + col*cellWidth
-		y := r.offsetY + row*cellHeight
-		rect := image.Rect(x, y, x+cellWidth, y+cellHeight).Intersect(r.frame.Bounds())
+		x := r.offsetX + col*r.font.cellWidth
+		y := r.offsetY + row*r.font.cellHeight
+		rect := image.Rect(x, y, x+r.font.cellWidth, y+r.font.cellHeight).Intersect(r.frame.Bounds())
 		draw.Draw(r.frame, rect, image.NewUniform(palette[bg&15]), image.Point{}, draw.Src)
+	}
+	for col := 0; col < t.cols; col++ {
+		value := t.cells[row*t.cols+col]
+		if value.continuation {
+			continue
+		}
+		fg, bg := value.fg, value.bg
+		if value.bold && fg < 8 {
+			fg += 8
+		}
+		if value.inverse || row == t.cursorY && col == t.cursorX {
+			fg, bg = bg, fg
+		}
+		x := r.offsetX + col*r.font.cellWidth
+		y := r.offsetY + row*r.font.cellHeight
 		glyph := value.rune
 		if glyph == 0 {
 			glyph = ' '
@@ -571,22 +675,11 @@ func (r *terminalRenderer) renderRow(t *terminal, row int) {
 }
 
 func (r *terminalRenderer) drawGlyph(destinationX, destinationY int, glyph rune, foreground color.RGBA) {
-	face := basicfont.Face7x13
-	dr, mask, maskPoint, _, ok := face.Glyph(fixed.P(0, face.Ascent), glyph)
-	if !ok {
-		dr, mask, maskPoint, _, _ = face.Glyph(fixed.P(0, face.Ascent), utf8.RuneError)
+	drawer := font.Drawer{
+		Dst: r.frame, Src: image.NewUniform(foreground), Face: r.font.face,
+		Dot: fixed.P(destinationX, destinationY+r.font.ascent),
 	}
-	for sourceY := dr.Min.Y; sourceY < dr.Max.Y; sourceY++ {
-		for sourceX := dr.Min.X; sourceX < dr.Max.X; sourceX++ {
-			_, _, _, alpha := mask.At(maskPoint.X+sourceX-dr.Min.X, maskPoint.Y+sourceY-dr.Min.Y).RGBA()
-			if alpha == 0 {
-				continue
-			}
-			x := destinationX + sourceX*fontScale
-			y := destinationY + sourceY*fontScale
-			draw.Draw(r.frame, image.Rect(x, y, x+fontScale, y+fontScale), image.NewUniform(foreground), image.Point{}, draw.Src)
-		}
-	}
+	drawer.DrawString(string(glyph))
 }
 
 var palette = [16]color.RGBA{

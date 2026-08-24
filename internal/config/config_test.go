@@ -23,6 +23,14 @@ sessions:
     type: vnc
     address: 127.0.0.1:5900
     password_file: secrets/vnc
+  ssh:
+    type: ssh
+    hostname: 127.0.0.1
+    port: 22
+    username: test
+    password: test
+    insecure_ignore_host_key: true
+    font_file: assets/terminal.ttf
 routing:
   default:
     no_card: test
@@ -43,6 +51,9 @@ routing:
 	}
 	if cfg.Sessions["vnc"].PasswordFile != filepath.Join(directory, "secrets/vnc") {
 		t.Fatalf("password path = %q", cfg.Sessions["vnc"].PasswordFile)
+	}
+	if cfg.Sessions["ssh"].FontFile != filepath.Join(directory, "assets/terminal.ttf") || cfg.Sessions["ssh"].FontSize != 20 {
+		t.Fatalf("SSH font defaults/paths = %#v", cfg.Sessions["ssh"])
 	}
 }
 
@@ -150,6 +161,17 @@ func TestSSHRequiresAuthenticationAndHostKeyPolicy(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected malformed SSH fingerprint to fail")
+	}
+}
+
+func TestSSHFontSizeRange(t *testing.T) {
+	cfg := Default()
+	cfg.Sessions["ssh"] = Session{
+		Type: "ssh", Hostname: "server", Port: 22, Username: "user", Password: "test",
+		InsecureIgnoreHostKey: true, FontSize: 7,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an out-of-range SSH font size to fail")
 	}
 }
 

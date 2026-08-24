@@ -151,6 +151,10 @@ sessions:
     username: user
     password: change-me
     insecure_ignore_host_key: true
+    # Optional: use a monospace font containing CJK/Powerline glyphs.
+    # Relative paths resolve from the directory containing config.yaml.
+    # font_file: ./assets/NotoSansMonoCJK-Regular.otf
+    font_size: 20
 
 routing:
   default:
@@ -169,10 +173,14 @@ host_key_sha256: SHA256:replace-with-server-fingerprint
 Authentication accepts one session-level `password` or `password_file`, an
 OpenSSH `private_key_file`, or both password and private key. If an encrypted
 private key is used, the configured password is also tried as its passphrase.
-The first terminal milestone requests an `xterm-256color` PTY, renders common
-ANSI cursor/erase/color sequences, and maps printable keys, arrows, navigation
-keys, F1-F12, and Ctrl/Alt combinations. Its built-in bitmap font currently
-renders ASCII plus a replacement glyph for other Unicode characters.
+The SSH terminal requests an `xterm-256color` PTY, renders common ANSI
+cursor/erase/color sequences, and maps printable keys, arrows, navigation keys,
+F1-F12, and Ctrl/Alt combinations. UTF-8 text is preserved, CJK/emoji wide
+characters occupy two terminal cells, and 256-color or true-color SGR values
+are mapped to the 16-color framebuffer palette. The embedded Go Mono font is
+used by default. Set `font_file` to a monospace TTF, OTF, TTC, or OTC font when
+CJK, Powerline, or other glyph coverage is needed. `font_size` defaults to 20
+and accepts values from 8 through 72.
 
 ## Run
 
@@ -267,9 +275,10 @@ runs as UID/GID 65534, so the source secret must be readable by that identity;
 on Linux it can be owned by `65534:65534` with mode `0400`. Some Compose engines
 implement file-backed secrets with bind mounts and ignore requested ownership
 metadata, so verify readability after changing its permissions. The `assets`
-directory is mounted at `/etc/sunray/assets` for optional card-test images. The
-local `config.yaml` and real secret files are excluded from the Docker build
-context. The runtime contains only the statically built server plus Debian slim.
+directory is mounted at `/etc/sunray/assets` for optional card-test images and
+SSH terminal fonts. The local `config.yaml` and real secret files are excluded
+from the Docker build context. The runtime contains only the statically built
+server plus Debian slim.
 
 Docker Desktop requires host networking to be enabled explicitly. Because its
 LAN source-address and UDP behavior can differ from native Linux, macOS hardware

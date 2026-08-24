@@ -30,6 +30,8 @@ type Config struct {
 	KnownHostsFile        string
 	HostKeySHA256         string
 	InsecureIgnoreHostKey bool
+	FontFile              string
+	FontSize              float64
 	ScreenWidth           int
 	ScreenHeight          int
 	Logger                *slog.Logger
@@ -51,9 +53,14 @@ func NewSession(config Config) *Session {
 }
 
 func (s *Session) Run(ctx context.Context) error {
-	term := newTerminal(s.config.ScreenWidth, s.config.ScreenHeight)
+	terminalFont, err := loadTerminalFont(s.config.FontFile, s.config.FontSize)
+	if err != nil {
+		return err
+	}
+	defer terminalFont.face.Close()
+	term := newTerminalWithFont(s.config.ScreenWidth, s.config.ScreenHeight, terminalFont)
 	cols, rows := term.dimensions()
-	renderer := newTerminalRenderer(s.config.ScreenWidth, s.config.ScreenHeight, cols, rows)
+	renderer := newTerminalRendererWithFont(s.config.ScreenWidth, s.config.ScreenHeight, cols, rows, terminalFont)
 	_, _ = fmt.Fprintf(term, "Connecting to %s ...\r\n", s.config.Address)
 	if err := s.render(term, renderer); err != nil {
 		return err
@@ -158,7 +165,8 @@ func (s *Session) connect(ctx context.Context, cols, rows int, output io.Writer)
 		return nil, nil, nil, fmt.Errorf("open stdin: %w", err)
 	}
 	modes := ssh.TerminalModes{
-		ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 115200, ssh.TTY_OP_OSPEED: 115200,
+		ssh.ECHO: 1, ssh.ICRNL: 1, ssh.OPOST: 1, ssh.ONLCR: 1,
+		ssh.TTY_OP_ISPEED: 115200, ssh.TTY_OP_OSPEED: 115200,
 	}
 	if err := remoteSession.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		remoteSession.Close()
