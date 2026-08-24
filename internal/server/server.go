@@ -31,7 +31,13 @@ type Config struct {
 type Server struct {
 	config Config
 	mu     sync.Mutex
-	active map[string]*display.Client
+	active map[string]activeDisplay
+}
+
+type activeDisplay struct {
+	client *display.Client
+	width  int
+	height int
 }
 
 func New(config Config) (*Server, error) {
@@ -50,7 +56,7 @@ func New(config Config) (*Server, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Server{config: config, active: make(map[string]*display.Client)}, nil
+	return &Server{config: config, active: make(map[string]activeDisplay)}, nil
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -127,9 +133,6 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				"card_id", properties["id"],
 				"event", properties["event"],
 				"resolution", properties["startRes"])
-			if properties["event"] == "remove" {
-				s.closeClient(clientKey)
-			}
 			if _, err := fmt.Fprintln(writer, auth.InfoResponse(message.Get("tokenSeq"))); err != nil {
 				logger.Warn("authentication response failed", "error", err)
 				return
@@ -138,6 +141,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 				logger.Warn("authentication flush failed", "error", err)
 				return
 			}
+			s.showCardStatus(clientKey, properties["type"], properties["id"], properties["event"], logger)
 		case "keepAliveReq":
 			if _, err := fmt.Fprintln(writer, "keepAliveCnf"); err != nil {
 				return
@@ -179,10 +183,10 @@ func (s *Server) startDisplay(key string, remoteIP net.IP, properties map[string
 
 	s.mu.Lock()
 	old := s.active[key]
-	s.active[key] = client
+	s.active[key] = activeDisplay{client: client, width: width, height: height}
 	s.mu.Unlock()
-	if old != nil {
-		old.Close()
+	if old.client != nil {
+		old.client.Close()
 	}
 
 	logger.Info("display channel opened",
@@ -193,14 +197,35 @@ func (s *Server) startDisplay(key string, remoteIP net.IP, properties map[string
 		"server_udp", client.LocalAddr(),
 		"resolution", fmt.Sprintf("%dx%d", width, height))
 
+	cardType := properties["type"]
+	cardID := properties["id"]
+	cardEvent := properties["event"]
 	go func() {
-		if err := client.ShowImage(width, height, s.config.Image); err != nil && !errors.Is(err, net.ErrClosed) {
+		cardImage := display.CardStatusImage(s.config.Image, cardType, cardID, cardEvent)
+		if err := client.ShowImage(width, height, cardImage); err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Error("test image transmission failed", "error", err)
 			return
 		}
 		logger.Info("test image transmission complete")
 	}()
 	return nil
+}
+
+func (s *Server) showCardStatus(key, cardType, cardID, event string, logger *slog.Logger) {
+	s.mu.Lock()
+	active, ok := s.active[key]
+	s.mu.Unlock()
+	if !ok || active.client == nil {
+		return
+	}
+	go func() {
+		cardImage := display.CardStatusImage(s.config.Image, cardType, cardID, event)
+		if err := active.client.ShowImage(active.width, active.height, cardImage); err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Warn("card status display failed", "error", err)
+			return
+		}
+		logger.Info("card status displayed", "card_type", cardType, "card_id", cardID, "event", event)
+	}()
 }
 
 func parseResolution(value string, fallbackWidth, fallbackHeight int) (int, int) {
@@ -219,20 +244,20 @@ func parseResolution(value string, fallbackWidth, fallbackHeight int) (int, int)
 
 func (s *Server) closeClient(key string) {
 	s.mu.Lock()
-	client := s.active[key]
+	active := s.active[key]
 	delete(s.active, key)
 	s.mu.Unlock()
-	if client != nil {
-		client.Close()
+	if active.client != nil {
+		active.client.Close()
 	}
 }
 
 func (s *Server) closeAll() {
 	s.mu.Lock()
 	clients := s.active
-	s.active = make(map[string]*display.Client)
+	s.active = make(map[string]activeDisplay)
 	s.mu.Unlock()
-	for _, client := range clients {
-		client.Close()
+	for _, active := range clients {
+		active.client.Close()
 	}
 }

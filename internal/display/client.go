@@ -26,6 +26,7 @@ type Client struct {
 	log    *slog.Logger
 
 	mu        sync.Mutex
+	renderMu  sync.Mutex
 	packetSeq uint16
 	opSeq     uint16
 	history   map[uint16][]byte

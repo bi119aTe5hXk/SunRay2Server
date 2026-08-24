@@ -10,8 +10,9 @@ milestone implements only enough of the kOpenRay-compatible protocol to:
 - send bounds, fill, cursor and 24-bit RGB bitmap operations;
 - handle display keepalives and NACK-based operation retransmission;
 - show a generated color test pattern or a supplied PNG/JPEG.
+- overlay the reported card type, card ID and insert/remove state on screen.
 
-SSH, VNC, RDP, card registration and input forwarding are intentionally not
+SSH, VNC, RDP, persistent card registration and input forwarding are intentionally not
 part of this milestone. They will be added only after real Sun Ray hardware
 confirms that authentication and display traffic work.
 
@@ -83,12 +84,16 @@ test image transmission complete
 ```
 
 Expected screen result: a centered six-color checkerboard test image with a
-white border on a black background.
+white border on a black background. A dark panel shows the current card reader
+state, reported card type and card ID. `PSEUDO` means no physical smart card is
+inserted; insert a card and confirm that both `TYPE` and `ID` change.
 
 ## Real-hardware acceptance checklist
 
 - The terminal connects and logs its serial number and native resolution.
 - Inserting a card logs a stable `card_type` and `card_id`.
+- The same physical card ID appears on screen after insertion.
+- Removing the card changes the panel to `CARD REMOVED` without restarting the server.
 - The generated test pattern is centered and has correct RGB colors.
 - No bands, stale regions or persistent corruption remain after retransmits.
 - Removing and reinserting the card starts a clean display session.
@@ -103,4 +108,3 @@ comparison with kOpenRay.
 The ALP authentication and display encoding are derived from kOpenRay/jOpenRay.
 Source files carry `SPDX-License-Identifier: GPL-2.0-or-later`; see `NOTICE` and
 `LICENSE`.
-

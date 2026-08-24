@@ -11,6 +11,8 @@ import (
 const maxRGBPayload = maxDatagramSize - packetHeaderSize - 12
 
 func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error {
+	c.renderMu.Lock()
+	defer c.renderMu.Unlock()
 	if screenWidth < 1 || screenHeight < 1 {
 		return fmt.Errorf("invalid screen size %dx%d", screenWidth, screenHeight)
 	}
