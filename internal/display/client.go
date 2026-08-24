@@ -137,25 +137,38 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) Send(op Operation) error {
+	return c.SendBatch([]Operation{op})
+}
+
+// SendBatch assigns drawing sequences to all operations and packs consecutive
+// small operations into as few ALP datagrams as possible. The original
+// jOpenRay transport treats a display message as a byte stream of operations;
+// sending every Fill/Bounds/Cursor in its own datagram wastes most of the MTU
+// and makes simple desktop updates unnecessarily expensive.
+func (c *Client) SendBatch(ops []Operation) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return net.ErrClosed
 	}
-	if len(op.Bytes)+packetHeaderSize > maxDatagramSize {
-		return fmt.Errorf("operation is too large: %d bytes", len(op.Bytes))
-	}
-	if op.Increment {
-		c.opSeq++
-	}
-	encoded := op.WithSequence(uint16(c.opSeq)).Bytes
-	if op.Increment {
-		c.history[c.opSeq] = append([]byte(nil), encoded...)
-		if len(c.history) > maxHistorySize {
-			delete(c.history, c.opSeq-uint32(maxHistorySize))
+	encoded := make([][]byte, 0, len(ops))
+	for _, op := range ops {
+		if len(op.Bytes)+packetHeaderSize > maxDatagramSize {
+			return fmt.Errorf("operation is too large: %d bytes", len(op.Bytes))
+		}
+		if op.Increment {
+			c.opSeq++
+		}
+		bytes := op.WithSequence(uint16(c.opSeq)).Bytes
+		encoded = append(encoded, bytes)
+		if op.Increment {
+			c.history[c.opSeq] = append([]byte(nil), bytes...)
+			if len(c.history) > maxHistorySize {
+				delete(c.history, c.opSeq-uint32(maxHistorySize))
+			}
 		}
 	}
-	return c.sendLocked(encoded)
+	return c.sendEncodedOperationsLocked(encoded)
 }
 
 // FlushHistory marks a full-screen refresh boundary. kOpenRay does the same
@@ -168,6 +181,27 @@ func (c *Client) FlushHistory() {
 }
 
 func (c *Client) sendLocked(encoded []byte) error {
+	return c.sendPacketLocked(encoded)
+}
+
+func (c *Client) sendEncodedOperationsLocked(operations [][]byte) error {
+	buffer := make([]byte, 0, maxDatagramSize-packetHeaderSize)
+	for _, encoded := range operations {
+		if len(buffer) > 0 && len(buffer)+len(encoded) > cap(buffer) {
+			if err := c.sendPacketLocked(buffer); err != nil {
+				return err
+			}
+			buffer = buffer[:0]
+		}
+		buffer = append(buffer, encoded...)
+	}
+	if len(buffer) == 0 {
+		return nil
+	}
+	return c.sendPacketLocked(buffer)
+}
+
+func (c *Client) sendPacketLocked(encoded []byte) error {
 	c.pacePacketLocked()
 	c.packetSeq++
 	packet := make([]byte, packetHeaderSize+len(encoded))
@@ -406,6 +440,7 @@ func (c *Client) resend(marker, from, to uint32) bool {
 	}
 	resent := 0
 	lastResent := uint32(0)
+	var replay [][]byte
 	if from <= to && from <= c.opSeq {
 		to = min(to, c.opSeq)
 		if to-from+1 > maxResendBatch {
@@ -419,10 +454,7 @@ func (c *Client) resend(marker, from, to uint32) bool {
 			if !ok {
 				break
 			}
-			if err := c.sendLocked(encoded); err != nil {
-				c.log.Warn("display resend failed", "sequence", seq, "error", err)
-				return false
-			}
+			replay = append(replay, encoded)
 			resent++
 			lastResent = seq
 		}
@@ -433,6 +465,10 @@ func (c *Client) resend(marker, from, to uint32) bool {
 		// makes Sun Ray 2 firmware immediately repeat the request, creating a
 		// self-sustaining request/completion loop after a server restart.
 		c.logMissingNACKLocked(marker, from, to, requestedFrom, requestedTo)
+		return false
+	}
+	if err := c.sendEncodedOperationsLocked(replay); err != nil {
+		c.log.Warn("display resend failed", "from", from, "to", lastResent, "error", err)
 		return false
 	}
 	pad := Pad().WithSequence(uint16(c.opSeq)).Bytes

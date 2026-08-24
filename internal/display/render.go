@@ -19,14 +19,12 @@ func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error
 	if img == nil || img.Bounds().Empty() {
 		return fmt.Errorf("image is empty")
 	}
-	for _, op := range []Operation{
+	if err := c.SendBatch([]Operation{
 		Bounds(screenWidth, screenHeight),
 		Fill(0, 0, screenWidth, screenHeight, color.Black),
 		InvisibleCursor(),
-	} {
-		if err := c.Send(op); err != nil {
-			return err
-		}
+	}); err != nil {
+		return err
 	}
 	// Bounds/cursor setup is complete and the following bitmap supersedes the
 	// previous screen. Keep only this new frame available for retransmission.
@@ -38,7 +36,7 @@ func (c *Client) ShowImage(screenWidth, screenHeight int, img image.Image) error
 	source = image.Rect(source.Min.X, source.Min.Y, source.Min.X+visibleWidth, source.Min.Y+visibleHeight)
 	destination := image.Pt((screenWidth-visibleWidth)/2, (screenHeight-visibleHeight)/2)
 
-	return c.sendBitmapTiles(img, source, destination)
+	return c.sendEncodedBitmap(img, source, destination)
 }
 
 // ShowCalibrationImage clears the largest geometry visited by an interactive
@@ -64,7 +62,7 @@ func (c *Client) ShowCalibrationImage(width, height, clearWidth, clearHeight int
 		}
 	}
 	c.FlushHistory()
-	return c.sendBitmapTiles(img, img.Bounds(), image.Point{})
+	return c.sendEncodedBitmap(img, img.Bounds(), image.Point{})
 }
 
 // ShowCalibrationTarget renders the live geometry target mostly with compact
@@ -122,6 +120,10 @@ func (c *Client) ShowCalibrationTarget(width, height, clearWidth, clearHeight in
 }
 
 func (c *Client) sendBitmapTiles(img image.Image, source image.Rectangle, destination image.Point) error {
+	return c.sendBitmapTilesInto(img, source, destination, nil)
+}
+
+func (c *Client) sendBitmapTilesInto(img image.Image, source image.Rectangle, destination image.Point, ops []Operation) error {
 	tileWidth, tileHeight := bestTileSize(source.Dx(), source.Dy())
 	for y := 0; y < source.Dy(); y += tileHeight {
 		h := min(tileHeight, source.Dy()-y)
@@ -132,12 +134,156 @@ func (c *Client) sendBitmapTiles(img image.Image, source image.Rectangle, destin
 			if err != nil {
 				return err
 			}
-			if err := c.Send(op); err != nil {
-				return err
-			}
+			ops = append(ops, op)
 		}
 	}
-	return nil
+	return c.SendBatch(ops)
+}
+
+type scanlineKind uint8
+
+const (
+	scanlineRGB scanlineKind = iota
+	scanlineFill
+	scanlineBiColor
+)
+
+type scanlineEncoding struct {
+	kind   scanlineKind
+	color0 color.RGBA
+	color1 color.RGBA
+}
+
+// sendEncodedBitmap follows the proven jOpenRay strategy: classify scanlines,
+// merge adjacent compatible lines, encode flat areas as Fill and two-color
+// areas as one-bit bitmaps, and retain RGB as the lossless fallback.
+func (c *Client) sendEncodedBitmap(img image.Image, source image.Rectangle, destination image.Point) error {
+	ops, err := encodeBitmapOperations(img, source, destination)
+	if err != nil {
+		return err
+	}
+	return c.SendBatch(ops)
+}
+
+func encodeBitmapOperations(img image.Image, source image.Rectangle, destination image.Point) ([]Operation, error) {
+	if source.Empty() {
+		return nil, nil
+	}
+	lines := make([]scanlineEncoding, source.Dy())
+	for y := source.Min.Y; y < source.Max.Y; y++ {
+		lines[y-source.Min.Y] = classifyScanline(img, source.Min.X, source.Max.X, y)
+	}
+	ops := make([]Operation, 0, source.Dy())
+	for first := 0; first < len(lines); {
+		last := first + 1
+		for last < len(lines) && compatibleScanlines(lines[first], lines[last]) {
+			last++
+		}
+		rect := image.Rect(source.Min.X, source.Min.Y+first, source.Max.X, source.Min.Y+last)
+		dst := image.Pt(destination.X, destination.Y+first)
+		switch lines[first].kind {
+		case scanlineFill:
+			ops = append(ops, Fill(dst.X, dst.Y, rect.Dx(), rect.Dy(), lines[first].color0))
+		case scanlineBiColor:
+			var err error
+			ops, err = appendBiColorTiles(ops, img, rect, dst, lines[first].color0, lines[first].color1)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			var err error
+			ops, err = appendBitmapTiles(ops, img, rect, dst)
+			if err != nil {
+				return nil, err
+			}
+		}
+		first = last
+	}
+	return ops, nil
+}
+
+func classifyScanline(img image.Image, minX, maxX, y int) scanlineEncoding {
+	first := rgbaAt(img, minX, y)
+	line := scanlineEncoding{kind: scanlineFill, color0: first}
+	for x := minX + 1; x < maxX; x++ {
+		pixel := rgbaAt(img, x, y)
+		if pixel == line.color0 {
+			continue
+		}
+		if line.kind == scanlineFill {
+			line.kind = scanlineBiColor
+			line.color1 = pixel
+			continue
+		}
+		if pixel != line.color1 {
+			line.kind = scanlineRGB
+			return line
+		}
+	}
+	if line.kind == scanlineBiColor && rgbaLess(line.color1, line.color0) {
+		line.color0, line.color1 = line.color1, line.color0
+	}
+	return line
+}
+
+func rgbaLess(a, b color.RGBA) bool {
+	if a.R != b.R {
+		return a.R < b.R
+	}
+	if a.G != b.G {
+		return a.G < b.G
+	}
+	if a.B != b.B {
+		return a.B < b.B
+	}
+	return a.A < b.A
+}
+
+func compatibleScanlines(a, b scanlineEncoding) bool {
+	if a.kind != b.kind {
+		return false
+	}
+	if a.kind == scanlineRGB {
+		return true
+	}
+	return a.color0 == b.color0 && (a.kind != scanlineBiColor || a.color1 == b.color1)
+}
+
+func appendBitmapTiles(ops []Operation, img image.Image, source image.Rectangle, destination image.Point) ([]Operation, error) {
+	tileWidth, tileHeight := bestTileSize(source.Dx(), source.Dy())
+	for y := 0; y < source.Dy(); y += tileHeight {
+		h := min(tileHeight, source.Dy()-y)
+		for x := 0; x < source.Dx(); x += tileWidth {
+			w := min(tileWidth, source.Dx()-x)
+			rect := image.Rect(source.Min.X+x, source.Min.Y+y, source.Min.X+x+w, source.Min.Y+y+h)
+			op, err := BitmapRGB(img, rect, image.Pt(destination.X+x, destination.Y+y))
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, nil
+}
+
+func appendBiColorTiles(ops []Operation, img image.Image, source image.Rectangle, destination image.Point, c0, c1 color.RGBA) ([]Operation, error) {
+	const maxBitmapBytes = maxDatagramSize - packetHeaderSize - 20
+	tileWidth := min(source.Dx(), maxBitmapBytes*8)
+	stride := (tileWidth + 7) / 8
+	tileHeight := min(source.Dy(), max(1, maxBitmapBytes/stride))
+	for y := 0; y < source.Dy(); y += tileHeight {
+		h := min(tileHeight, source.Dy()-y)
+		for x := 0; x < source.Dx(); x += tileWidth {
+			w := min(tileWidth, source.Dx()-x)
+			rect := image.Rect(source.Min.X+x, source.Min.Y+y, source.Min.X+x+w, source.Min.Y+y+h)
+			op, err := BitmapBiColor(img, rect, image.Pt(destination.X+x, destination.Y+y), c0, c1)
+			if err != nil {
+				return nil, err
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, nil
 }
 
 // ShowImageRegion updates only a changed portion of an image. The image uses
@@ -163,22 +309,7 @@ func (c *Client) ShowImageRegion(screenWidth, screenHeight int, img image.Image,
 	}
 	offset := image.Pt((screenWidth-visibleWidth)/2-source.Min.X, (screenHeight-visibleHeight)/2-source.Min.Y)
 
-	tileWidth, tileHeight := bestTileSize(changed.Dx(), changed.Dy())
-	for y := changed.Min.Y; y < changed.Max.Y; y += tileHeight {
-		h := min(tileHeight, changed.Max.Y-y)
-		for x := changed.Min.X; x < changed.Max.X; x += tileWidth {
-			w := min(tileWidth, changed.Max.X-x)
-			rect := image.Rect(x, y, x+w, y+h)
-			op, err := BitmapRGB(img, rect, image.Pt(x+offset.X, y+offset.Y))
-			if err != nil {
-				return err
-			}
-			if err := c.Send(op); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return c.sendEncodedBitmap(img, changed, changed.Min.Add(offset))
 }
 
 func bestTileSize(width, height int) (int, int) {

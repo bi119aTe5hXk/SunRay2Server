@@ -109,13 +109,17 @@ func TestNACKFromZeroIncludesAnchorAndCompletion(t *testing.T) {
 
 	wantCodes := []byte{opPad, opFill}
 	wantSeqs := []uint16{0, 1}
+	replayPacket := readTestPacket(t, receiver)
+	replayOffset := packetHeaderSize
 	for i := range wantCodes {
-		packet := readTestPacket(t, receiver)
-		if got := packet[packetHeaderSize]; got != wantCodes[i] {
+		if got := replayPacket[replayOffset]; got != wantCodes[i] {
 			t.Fatalf("packet %d opcode = %#x, want %#x", i, got, wantCodes[i])
 		}
-		if got := binary.BigEndian.Uint16(packet[packetHeaderSize+2 : packetHeaderSize+4]); got != wantSeqs[i] {
+		if got := binary.BigEndian.Uint16(replayPacket[replayOffset+2 : replayOffset+4]); got != wantSeqs[i] {
 			t.Fatalf("packet %d sequence = %d, want %d", i, got, wantSeqs[i])
+		}
+		if i == 0 {
+			replayOffset += len(Pad().Bytes)
 		}
 	}
 	completion := readTestPacket(t, receiver)
@@ -145,8 +149,7 @@ func TestNACKFromZeroIncludesAnchorAndCompletion(t *testing.T) {
 	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
 		t.Fatal(err)
 	}
-	_ = readTestPacket(t, receiver) // Pad 0.
-	_ = readTestPacket(t, receiver) // Fill 1.
+	_ = readTestPacket(t, receiver) // Batched Pad 0 + Fill 1 replay.
 	completion = readTestPacket(t, receiver)
 	if got := binary.BigEndian.Uint16(completion[statusOffset+2 : statusOffset+4]); got != 1 {
 		t.Fatalf("repeated completion status sequence = %d, want 1", got)
@@ -240,14 +243,17 @@ func TestWrappedNACKReplaysCurrentSequenceEpoch(t *testing.T) {
 	if _, err := receiver.WriteToUDP(nack, clientAddr); err != nil {
 		t.Fatal(err)
 	}
+	replayed := readTestPacket(t, receiver)
+	replayOffset := packetHeaderSize
+	fillLength := len(Fill(1, 2, 3, 4, testColor{}).Bytes)
 	for i := range 3 {
-		packet := readTestPacket(t, receiver)
-		if got := packet[packetHeaderSize]; got != opFill {
+		if got := replayed[replayOffset]; got != opFill {
 			t.Fatalf("wrapped replay %d opcode = %#x, want fill", i, got)
 		}
-		if got := binary.BigEndian.Uint16(packet[packetHeaderSize+2 : packetHeaderSize+4]); got != uint16(i) {
+		if got := binary.BigEndian.Uint16(replayed[replayOffset+2 : replayOffset+4]); got != uint16(i) {
 			t.Fatalf("wrapped replay %d sequence = %d", i, got)
 		}
+		replayOffset += fillLength
 	}
 	completion := readTestPacket(t, receiver)
 	if got := completion[packetHeaderSize+len(Pad().Bytes)]; got != opResendDone {
@@ -340,6 +346,40 @@ func TestPacketPacingGroupsPacketsIntoBursts(t *testing.T) {
 	client.pacePacketLocked()
 	if client.burstPackets != 1 {
 		t.Fatalf("new burst packets = %d, want 1", client.burstPackets)
+	}
+}
+
+func TestSendBatchPacksSmallOperationsIntoOneDatagram(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 0, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ops := []Operation{
+		Fill(0, 0, 10, 10, testColor{}),
+		Fill(10, 0, 10, 10, testColor{}),
+		LocalCursor(),
+	}
+	if err := client.SendBatch(ops); err != nil {
+		t.Fatal(err)
+	}
+	packet := readTestPacket(t, receiver)
+	if got, want := len(packet), packetHeaderSize+len(ops[0].Bytes)+len(ops[1].Bytes)+len(ops[2].Bytes); got != want {
+		t.Fatalf("packet length = %d, want %d", got, want)
+	}
+	offset := packetHeaderSize
+	for i, op := range ops {
+		if got := binary.BigEndian.Uint16(packet[offset+2 : offset+4]); got != uint16(i+1) {
+			t.Fatalf("operation %d sequence = %d, want %d", i, got, i+1)
+		}
+		offset += len(op.Bytes)
 	}
 }
 

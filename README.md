@@ -113,6 +113,23 @@ server:
   display_height: 1050
 ```
 
+Display traffic is paced with `packet_delay`. The default template uses
+`150us`, which is approximately 80 Mbit/s including packet overhead at the
+1448-byte ALP datagram size and leaves some headroom on a 100 Mbit/s link.
+`125us` is the practical lower edge and may trigger packet loss and expensive
+resends; increase the value toward `200us` if debug logs show recurring NACKs:
+
+```yaml
+server:
+  packet_delay: 150us
+```
+
+The display encoder packs small ALP operations into a single datagram, replaces
+solid scanline groups with Fill operations, and sends two-color groups as
+one-bit bitmaps. Photographs and full-screen motion still fall back to raw RGB,
+so reducing the logical display resolution remains the most effective option
+for that workload.
+
 VNC credentials are configured per session, so different servers can use
 different passwords. For a simple private-LAN test, they may be written directly
 in the ignored local `config.yaml`:

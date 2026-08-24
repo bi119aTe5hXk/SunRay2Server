@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/color"
+	"reflect"
 	"testing"
 )
 
@@ -34,6 +35,30 @@ func TestBitmapRGBPadsRowsAndUsesBGR(t *testing.T) {
 	}
 	if got := o.Bytes[12:16]; string(got) != string([]byte{0x30, 0x20, 0x10, 0x00}) {
 		t.Fatalf("unexpected bitmap bytes: %x", got)
+	}
+}
+
+func TestBitmapBiColorUsesOneBitPerPixel(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 9, 2))
+	c0 := color.RGBA{R: 10, G: 20, B: 30, A: 255}
+	c1 := color.RGBA{R: 40, G: 50, B: 60, A: 255}
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 9; x++ {
+			img.SetRGBA(x, y, c0)
+		}
+	}
+	img.SetRGBA(0, 0, c1)
+	img.SetRGBA(8, 0, c1)
+	img.SetRGBA(1, 1, c1)
+	op, err := BitmapBiColor(img, img.Bounds(), image.Pt(3, 4), c0, c1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(op.Bytes), 24; got != want {
+		t.Fatalf("operation length = %d, want %d", got, want)
+	}
+	if got := op.Bytes[20:24]; !reflect.DeepEqual(got, []byte{0x80, 0x80, 0x40, 0x00}) {
+		t.Fatalf("bitmap bytes = %x, want 80804000", got)
 	}
 }
 

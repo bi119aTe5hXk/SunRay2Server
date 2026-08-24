@@ -12,6 +12,7 @@ import (
 const (
 	opResendDone = 0xAC
 	opFill       = 0xA2
+	opBitmap     = 0xA5
 	opBitmapRGB  = 0xA6
 	opBounds     = 0xA8
 	opCursor     = 0xA9
@@ -125,6 +126,21 @@ func BitmapRGB(img image.Image, rect image.Rectangle, dst image.Point) (Operatio
 	o := operation(opBitmapRGB, dst.X, dst.Y, width, height, stride*height)
 
 	pos := 12
+	if rgba, ok := img.(*image.RGBA); ok {
+		for y := rect.Min.Y; y < rect.Max.Y; y++ {
+			rowStart := pos
+			source := rgba.PixOffset(rect.Min.X, y)
+			for x := 0; x < width; x++ {
+				o.Bytes[pos] = rgba.Pix[source+2]
+				o.Bytes[pos+1] = rgba.Pix[source+1]
+				o.Bytes[pos+2] = rgba.Pix[source]
+				pos += 3
+				source += 4
+			}
+			pos = rowStart + stride
+		}
+		return o, nil
+	}
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
 		rowStart := pos
 		for x := rect.Min.X; x < rect.Max.X; x++ {
@@ -137,6 +153,45 @@ func BitmapRGB(img image.Image, rect image.Rectangle, dst image.Point) (Operatio
 		pos = rowStart + stride
 	}
 	return o, nil
+}
+
+// BitmapBiColor encodes a rectangle using two colors and one bit per pixel.
+// ALP stores each bitmap row on a byte boundary and pads the complete bitplane
+// to a 32-bit boundary. Pixels matching c1 have their corresponding bit set.
+func BitmapBiColor(img image.Image, rect image.Rectangle, dst image.Point, c0, c1 color.RGBA) (Operation, error) {
+	if rect.Empty() || !rect.In(img.Bounds()) {
+		return Operation{}, fmt.Errorf("bitmap rectangle %v is outside image bounds %v", rect, img.Bounds())
+	}
+	stride := (rect.Dx() + 7) / 8
+	bitmapLength := round4(stride * rect.Dy())
+	o := operation(opBitmap, dst.X, dst.Y, rect.Dx(), rect.Dy(), 8+bitmapLength)
+	setOperationColor(o.Bytes[12:16], c0)
+	setOperationColor(o.Bytes[16:20], c1)
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		row := 20 + (y-rect.Min.Y)*stride
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			if rgbaAt(img, x, y) == c1 {
+				o.Bytes[row+(x-rect.Min.X)/8] |= 1 << (7 - uint(x-rect.Min.X)%8)
+			}
+		}
+	}
+	return o, nil
+}
+
+func setOperationColor(destination []byte, c color.RGBA) {
+	destination[0] = 0
+	destination[1] = c.B
+	destination[2] = c.G
+	destination[3] = c.R
+}
+
+func rgbaAt(img image.Image, x, y int) color.RGBA {
+	if rgba, ok := img.(*image.RGBA); ok {
+		offset := rgba.PixOffset(x, y)
+		return color.RGBA{R: rgba.Pix[offset], G: rgba.Pix[offset+1], B: rgba.Pix[offset+2], A: rgba.Pix[offset+3]}
+	}
+	r, g, b, a := img.At(x, y).RGBA()
+	return color.RGBA{R: byte(r >> 8), G: byte(g >> 8), B: byte(b >> 8), A: byte(a >> 8)}
 }
 
 func round4(n int) int {

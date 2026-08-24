@@ -13,7 +13,10 @@ server:
   # usable viewport. Calibrate your own terminal before enabling an override.
   # display_width: 1400
   # display_height: 1050
-  packet_delay: 200us
+  # 150us is about 80 Mbit/s including packet overhead at a 1448-byte MTU.
+  # Raise this if the terminal requests frequent resends; 125us is the
+  # practical lower edge of a 100 Mbit/s Sun Ray link.
+  packet_delay: 150us
   smartcard_listen: ""
   # Disabled by default because pointer motion can generate hundreds of events.
   log_input_events: false
