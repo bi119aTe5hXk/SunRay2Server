@@ -1,64 +1,28 @@
 # SunRay2Server
 
-An experimental, headless Go server for Sun Ray 2 terminals. This first
-milestone implements only enough of the kOpenRay-compatible protocol to:
+SunRay2Server is an experimental Go server for Sun Ray 2 terminals. It accepts
+the Sun Ray authentication/display protocol and routes each terminal to a
+local test page or a remote SSH, VNC, or RDP session.
 
-- accept the terminal authentication connection on TCP port 7009;
-- observe terminal, smart-card and resolution properties;
-- negotiate the unencrypted display session used by kOpenRay;
-- open a bidirectional UDP display channel;
-- send bounds, fill, cursor and 24-bit RGB bitmap operations;
-- handle display keepalives and NACK-based operation retransmission;
-- decode USB HID keyboard reports and absolute pointer/button reports from the
-  terminal UDP channel;
-- show a generated color test pattern or a supplied PNG/JPEG;
-- overlay the reported card type, card ID and insert/remove state on screen;
-- reduce the observed card events to stable `no-card` and `card-present`
-  session slots;
-- passively capture the initial Sun Ray smart-card service traffic on TCP 4120
-  and recognize valid ISO 7816 ATR byte strings when explicitly enabled.
+The current card reader integration reliably distinguishes `no-card` and
+`card-present`. Some firmware reports `card_id=0`, so exact card routing is
+available only when the terminal provides a real ID.
 
-VNC, SSH and RDP are connected remote-session adapters. Persistent card
-registration is not connected yet. The two card states are detected as session
-slots. YAML routing can bind either state, an exact future card ID, or a specific
-terminal serial number to a `card-test`, VNC, SSH, or RDP session.
+## Features and limitations
 
-Audio is not implemented yet. Standard RFB/VNC has no interoperable audio
-channel, and the current RDP helper does not request or capture redirected
-sound. Sun Ray hardware supports downstream audio through ALP, but adding it
-requires an audio capture/resampling pipeline and the still-experimental ALP
-audio packet format; video sessions are currently silent.
-
-## Security
-
-The Sun Ray transport currently announces `encUpType=none` and
-`encDownType=none`, matching kOpenRay. Run this server only on an isolated,
-trusted LAN or VLAN. Do not expose TCP 7009 or the UDP display traffic to the
-internet. The disabled-by-default smart-card probe on TCP 4120 is read-only: it sends no
-PC/SC response and no APDU to the card. It is intended only for protocol
-observation on the same isolated network.
-
-Classic VNC password authentication and RFB framebuffer/input traffic are not
-encrypted. Use the VNC adapter only on a trusted network or through a separately
-secured tunnel. Each VNC session may use an inline `password` or its own
-`password_file`; classic VNC authentication still uses only the first eight
-password bytes.
-
-SSH transport is encrypted. SSH sessions require one explicit host-key policy:
-a `known_hosts_file`, a fixed `host_key_sha256` fingerprint, or the deliberately
-unsafe `insecure_ignore_host_key: true` test option. The unsafe option is never
-enabled implicitly.
-
-RDP transport and authentication are handled by FreeRDP. The adapter runs each
-RDP connection in its own Xvfb display and exports that framebuffer through an
-unauthenticated VNC listener bound only to loopback. The RDP password is supplied
-to FreeRDP through standard input, not a process argument. Certificate validation
-defaults to `deny`; use `ignore` only for controlled testing with a known
-self-signed server.
+- Sun Ray authentication, display, keyboard, pointer, and wheel input.
+- `card-test` and interactive `geometry-test` sessions.
+- SSH with a PTY and framebuffer terminal.
+- VNC with per-session credentials, scaling, and CopyRect updates.
+- RDP through FreeRDP + Xvfb + x11vnc.
+- Optional passive smart-card/ATR observation on TCP 4120.
+- No audio forwarding yet. Sun Ray and VNC transports are not encrypted;
+  use them only on a trusted network or through a secure tunnel.
+- A physical monitor is not required. RDP uses an in-container Xvfb display.
 
 ## Build and test
 
-Go 1.23 or later is recommended.
+Go 1.23 or newer is recommended.
 
 ```sh
 make test
@@ -66,423 +30,161 @@ make vet
 make build
 ```
 
-The test suite includes byte-level operation encoding checks, ATR and HID input
-parsing, SSH keyboard/ANSI terminal rendering, and a local UDP round trip which
-verifies packet sequencing, input dispatch and NACK retransmission.
-
-## Configuration
-
-Copy `config.yaml.template` to `config.yaml`, then adjust its remote sessions and
-routing. Start the server with:
+Run the generated test pattern:
 
 ```sh
+./sunrayd -listen :7009 -debug
+```
+
+For configuration-based operation:
+
+```sh
+cp config.yaml.template config.yaml
+# Edit config.yaml, then:
 ./sunrayd -config ./config.yaml -debug
 ```
 
-The configuration contains four sections:
+The old one-command VNC path is still available:
 
-- `server`: authentication listener, fallback resolution, packet pacing and
-  the optional smart-card probe;
-- `sessions`: named `card-test`, `geometry-test`, `vnc`, `ssh`, or `rdp`
-  definitions;
-- `routing.default`: fallback sessions for no card, an unknown physical card,
-  and exact card IDs;
-- `routing.terminals`: optional overrides keyed by Sun Ray serial number.
-
-Route matching is deterministic: terminal-specific exact card ID, global exact
-card ID, terminal card state, then global card state. Matching serial numbers
-and card IDs is case-insensitive. With the currently observed all-zero physical
-card ID, insertion selects `card_present`; a future real ID can be placed under
-`cards` without changing the session definitions.
-
-Relative `image`, `password_file`, `private_key_file`, and `known_hosts_file`
-paths are resolved from the directory containing the YAML file. Unknown YAML
-fields, invalid session references and malformed addresses cause startup to
-fail instead of being silently ignored.
-
-Input event logging is disabled by default because raw pointer motion can
-produce hundreds of events per second. Enable it only for diagnostics:
-
-```yaml
-server:
-  log_input_events: true
+```sh
+./sunrayd -vnc 192.168.30.10:5900 -debug
 ```
 
-`display_width` and `display_height` can override the logical canvas reported
-by the terminal. Both must be set together. This also limits the VNC update
-region, but it does not change the physical DVI timing selected by the Sun Ray
-firmware:
+## Configuration
+
+`config.yaml.template` is the complete starting point. The file has three
+sections:
+
+- `server`: TCP listener, fallback/canvas resolution, packet pacing, logging,
+  and optional smart-card probing.
+- `sessions`: named `card-test`, `geometry-test`, `vnc`, `ssh`, or `rdp`
+  sessions.
+- `routing`: maps `no_card`, `card_present`, exact card IDs, or terminal serials
+  to session names. Terminal-specific routes take precedence over defaults.
+
+Example:
 
 ```yaml
+version: 1
+
 server:
+  listen: ":7009"
   display_width: 1400
   display_height: 1050
-```
-
-Display traffic is paced with `packet_delay`. The default template uses
-`150us`, which is approximately 80 Mbit/s including packet overhead at the
-1448-byte ALP datagram size and leaves some headroom on a 100 Mbit/s link.
-`125us` is the practical lower edge and may trigger packet loss and expensive
-resends; increase the value toward `200us` if debug logs show recurring NACKs:
-
-```yaml
-server:
   packet_delay: 150us
-```
+  log_input_events: false
 
-The display encoder packs small ALP operations into a single datagram, replaces
-solid scanline groups with Fill operations, and sends two-color groups as
-one-bit bitmaps. Photographs and full-screen motion still fall back to raw RGB,
-so reducing the logical display resolution remains the most effective option
-for that workload.
-
-VNC `CopyRect` updates are passed through as native Sun Ray framebuffer copies.
-This reduces a window move or scroll from a large RGB transfer to a 16-byte ALP
-operation when the source and destination are fully visible. Scaled or clipped
-updates automatically fall back to pixels. The RDP x11vnc bridge enables its
-window/scroll CopyRect detection, uses 5 ms polling/defer intervals, and disables
-the long idle sleep used when x11vnc thinks framebuffer polling is overloaded.
-
-VNC credentials are configured per session, so different servers can use
-different passwords. For a simple private-LAN test, they may be written directly
-in the ignored local `config.yaml`:
-
-```yaml
 sessions:
+  card-test:
+    type: card-test
   office-vnc:
     type: vnc
     address: 192.168.30.10:5900
-    password: office-password
-  lab-vnc:
-    type: vnc
-    address: 192.168.30.11:5900
-    password: lab-password
+    password: change-me
+    resolution_mode: current
+  admin-ssh:
+    type: ssh
+    hostname: 192.168.30.20
+    port: 22
+    username: user
+    password: change-me
+    insecure_ignore_host_key: true # use a known_hosts file in production
+
+routing:
+  default:
+    no_card: card-test
+    card_present: office-vnc
+    # cards:
+    #   "0x0123456789abcdef": admin-ssh
 ```
 
-Alternatively, give each session a separate `password_file`. `password` and
-`password_file` are mutually exclusive within one session. Keep `config.yaml`
-out of version control when it contains inline credentials; this repository's
-`.gitignore` already excludes it.
+Passwords are per session. Use `password_file` instead of inline `password`
+when the configuration is shared or committed. They are mutually exclusive.
+Relative image, font, key, known-hosts, and password paths are resolved from
+the directory containing `config.yaml`.
 
-Each VNC session independently selects its logical display resolution with
-`resolution_mode`:
+### Display geometry
 
-- `current` (default) uses the current server canvas after the global
-  `server.display_width/display_height` override.
-- `terminal` uses the original `startRes` reported by the Sun Ray, ignoring the
-  global override for this VNC session.
-- `vnc` follows the remote VNC framebuffer size and later DesktopSize changes.
-- `manual` uses the session's own `display_width` and `display_height`.
-
-For example:
-
-```yaml
-sessions:
-  native-vnc:
-    type: vnc
-    address: 192.168.30.10:5900
-    resolution_mode: vnc
-  fixed-vnc:
-    type: vnc
-    address: 192.168.30.11:5900
-    resolution_mode: manual
-    display_width: 1400
-    display_height: 1050
-```
-
-`current`, `terminal`, and `manual` request the complete remote framebuffer and
-scale it proportionally into the selected canvas, adding black bars when the
-aspect ratios differ. Pointer coordinates are mapped back into the remote
-framebuffer. `vnc` keeps a native 1:1 framebuffer; choosing it for a desktop
-larger than the physical viewport may cause Sun Ray panning. Because the current
-RFB client uses Raw encoding, fitting a large remote framebuffer increases
-initial network traffic.
-
-`card-test` is a normal session type and can optionally use its own PNG/JPEG:
-
-```yaml
-sessions:
-  diagnostics:
-    type: card-test
-    image: ./assets/diagnostics.png
-```
-
-### Geometry calibration
-
-`geometry-test` is an interactive session for finding the logical canvas that
-matches the Sun Ray's physical viewport. It starts from the terminal's reported
-`startRes` value (or the configured display override) and redraws a colored
-edge-to-edge target after each adjustment:
+The Sun Ray reports a logical canvas, which is separate from the monitor's DVI
+timing. To calibrate it, temporarily route a card state to `geometry-test`:
 
 ```yaml
 sessions:
   geometry-test:
     type: geometry-test
-
 routing:
   default:
     no_card: geometry-test
     card_present: geometry-test
 ```
 
-Use the keyboard to adjust the target:
+Use arrow keys to change the width/height, `Shift` for 1-pixel steps, `Ctrl`
+for 100-pixel steps, `R` to reset, and `Enter` to log the result. Adjust until
+all four colored edges fit without panning, then copy the displayed value to
+`server.display_width` and `server.display_height`. A tested Sun Ray 2 with a
+1920x1080 monitor used `1400x1050`; measure each installation.
 
-- Left/Right decreases/increases width.
-- Up/Down decreases/increases height.
-- The normal step is 10 pixels; hold Shift for 1 pixel or Ctrl for 100 pixels.
-- `R` restores the initial geometry.
-- Enter writes the current value to the server log.
+VNC and RDP resolution modes:
 
-The top, right, bottom and left edges are red, green, blue and yellow. Adjust
-the dimensions until all four edges are visible at the same time and moving the
-pointer to an edge no longer pans the image. Copy the central `CURRENT W X H`
-value to `server.display_width` and `server.display_height`, then restore the
-normal session routes. This calibrates the ALP framebuffer and pointer bounds;
-it does not change the DVI timing generated by the Sun Ray firmware.
+- `current`: the configured/current Sun Ray canvas (default).
+- `terminal`: the original `startRes` reported by the terminal.
+- `manual`: session-level `display_width` and `display_height`.
+- VNC also supports `vnc`, which keeps the remote framebuffer at native size;
+  a larger desktop may pan on the Sun Ray.
 
-On the currently tested Sun Ray 2 and 1920x1080 monitor combination, the
-usable viewport calibrated to `1400x1050`. This is terminal/firmware/display
-dependent, so treat it as a measured example rather than a universal value.
+### SSH
 
-### SSH sessions
+SSH requires exactly one host-key policy: `known_hosts_file`,
+`host_key_sha256`, or `insecure_ignore_host_key`. The last option is intended
+only for testing. Passwords and private keys can be supplied with `password`,
+`password_file`, or `private_key_file`.
 
-The fastest trusted-LAN test uses password authentication and explicitly opts
-out of host-key verification:
+### RDP
 
-```yaml
-sessions:
-  test-ssh:
-    type: ssh
-    hostname: 192.168.30.20
-    port: 22
-    username: user
-    password: change-me
-    insecure_ignore_host_key: true
-    # Optional: use a monospace font containing CJK/Powerline glyphs.
-    # Relative paths resolve from the directory containing config.yaml.
-    # font_file: ./assets/NotoSansMonoCJK-Regular.otf
-    font_size: 20
+RDP sessions require `hostname`, `username`, and a password/password file. The
+`certificate` policy defaults to `deny`; `ignore` is convenient for a trusted
+LAN test with a self-signed server. Supported policies are `deny`, `ignore`,
+`tofu`, `name:<certificate-name>`, and `fingerprint:<hash>`.
 
-routing:
-  default:
-    no_card: card-test
-    card_present: test-ssh
-```
-
-For normal use, remove `insecure_ignore_host_key` and configure exactly one of:
-
-```yaml
-known_hosts_file: ./secrets/ssh_known_hosts
-# or
-host_key_sha256: SHA256:replace-with-server-fingerprint
-```
-
-Authentication accepts one session-level `password` or `password_file`, an
-OpenSSH `private_key_file`, or both password and private key. If an encrypted
-private key is used, the configured password is also tried as its passphrase.
-The SSH terminal requests an `xterm-256color` PTY, renders common ANSI
-cursor/erase/color sequences, and maps printable keys, arrows, navigation keys,
-F1-F12, and Ctrl/Alt combinations. UTF-8 text is preserved, CJK/emoji wide
-characters occupy two terminal cells, and 256-color or true-color SGR values
-are mapped to the 16-color framebuffer palette. The embedded Go Mono font is
-used by default. Set `font_file` to a monospace TTF, OTF, TTC, or OTC font when
-CJK, Powerline, or other glyph coverage is needed. `font_size` defaults to 20
-and accepts values from 8 through 72.
-
-### RDP sessions
-
-The quickest test with a typical self-signed Windows RDP certificate is:
-
-```yaml
-sessions:
-  test-rdp:
-    type: rdp
-    hostname: 192.168.30.30
-    port: 3389
-    username: user
-    password: change-me
-    resolution_mode: current
-    certificate: ignore
-
-routing:
-  default:
-    no_card: card-test
-    card_present: test-rdp
-```
-
-`resolution_mode` accepts `current`, `terminal`, or `manual`. `current` uses the
-calibrated/global canvas, `terminal` uses the original `startRes`, and `manual`
-requires session-level `display_width` and `display_height`. FreeRDP receives the
-same size and runs fullscreen inside that exact virtual display, so the RDP
-server should create a desktop matching the Sun Ray canvas without a second
-scaling pass.
-
-The `certificate` setting defaults to `deny`. It also accepts `tofu`, `ignore`,
-`name:<certificate-name>`, or `fingerprint:<hash>`. Prefer the strict default or
-a pinned identity outside initial trusted-LAN testing. `domain` is optional.
-As with VNC and SSH, `password` and `password_file` are per-session and mutually
-exclusive.
-
-The RDP adapter requires `Xvfb`, `x11vnc`, and either `xfreerdp3` or `xfreerdp`
-in `PATH`. They are already installed in the supplied Docker image. Native macOS
-builds can still run card-test, VNC, and SSH without these helpers; selecting an
-RDP session reports the missing executable in the log.
-
-For native macOS RDP operation, install the XQuartz X server and the two
-Homebrew tools, then open a new terminal before starting `sunrayd`:
-
-```sh
-brew install --cask xquartz
-brew install freerdp x11vnc
-```
-
-The server also checks the standard Apple Silicon and Intel Homebrew paths and
-`/opt/X11/bin/Xvfb` directly, so it does not depend solely on shell PATH setup.
-
-## Run
-
-With the built-in 640x360 test pattern:
-
-```sh
-./sunrayd -listen :7009 -debug
-```
-
-With an existing PNG or JPEG:
-
-```sh
-./sunrayd -listen :7009 -image /absolute/path/to/test.png -debug
-```
-
-Connect to a VNC server without authentication:
-
-```sh
-./sunrayd -listen :7009 -vnc 192.168.30.10:5900 -debug
-```
-
-For a server using classic VNC Password authentication, create a password file
-containing only the password, restrict its filesystem permissions, then run:
-
-```sh
-./sunrayd -listen :7009 \
-  -vnc 192.168.30.10:5900 \
-  -vnc-password-file /absolute/path/to/vnc-password \
-  -debug
-```
-
-The VNC client negotiates RFB 3.3, 3.7 or 3.8 and supports Security None,
-classic VNC authentication, Raw, CopyRect and DesktopSize. TLS/VeNCrypt and
-compressed encodings such as Tight, ZRLE and Hextile are not part of this first
-milestone. Configure the VNC server to permit one of the supported security
-types. The default `current` resolution mode proportionally fits the complete
-VNC desktop into the selected Sun Ray canvas.
-
-Useful flags:
-
-```text
--config ''
--fallback-width 1280
--fallback-height 1024
--packet-delay 200us
--smartcard-listen ''
--vnc ''
--vnc-password-file ''
-```
-
-Explicit legacy flags override their corresponding `server` YAML values.
-Passing `-vnc` creates a temporary `command-line-vnc` session and routes both
-card states to it, preserving the earlier one-command test workflow.
-
-The smart-card probe is disabled by default. It can still be enabled for later
-diagnostics with `-smartcard-listen :4120`.
-
-The server prefers the first resolution from the terminal's `startRes`
-property. The fallback is used only when that property is absent or invalid.
+The supplied Docker image includes `xfreerdp`, `Xvfb`, and `x11vnc`. A native
+installation must provide those programs in `PATH`.
 
 ## Docker Compose
 
-The included Compose deployment uses host networking because the server must
-observe the terminal address and exchange dynamic UDP display traffic. On a
-Linux Docker host:
+The default Compose file pulls the published image from GHCR and uses host
+networking. Host networking is required for TCP 7009 and the dynamic,
+bidirectional UDP display channel.
 
 ```sh
 cp config.yaml.template config.yaml
-# Edit config.yaml for the remote target and routing.
-SUNRAY_CONFIG=./config.yaml docker compose up
+# Edit config.yaml
+SUNRAY_CONFIG=./config.yaml COMPOSE_MENU=false docker compose up
 ```
 
-The default Compose file pulls
-`ghcr.io/bi119ate5hxk/sunray2server:latest`. Every push to `main` publishes a
-new multi-platform image for `linux/amd64` and `linux/arm64`,
-plus an immutable `sha-<full-commit-sha>` tag. To deploy a particular revision,
-set `image` in `compose.yaml` to that SHA tag. The workflow can also be run
-manually from the GitHub Actions page.
-
-GHCR must allow the deployment host to read the package. Public packages can
-be pulled anonymously; for a private package, run `docker login ghcr.io` before
-starting Compose. After a new `main` build succeeds, recreate with the latest
-published image:
+After a new `main` build:
 
 ```sh
 docker compose pull
-SUNRAY_CONFIG=./config.yaml docker compose up
+SUNRAY_CONFIG=./config.yaml COMPOSE_MENU=false docker compose up -d
 ```
 
-For local development, overlay the build file so Compose builds the current
-checkout instead of pulling GHCR:
+Each push to `main` publishes `linux/amd64` and `linux/arm64` images. A local
+checkout can be built with:
 
 ```sh
 SUNRAY_CONFIG=./config.yaml \
 docker compose -f compose.yaml -f compose.build.yaml up --build
 ```
 
-For simple local testing, set `password` directly on each VNC session in
-`config.yaml`; no Compose secret is required. For a less exposed credential,
-copy `secrets/vnc_password.template` to a file outside version control, replace
-its contents, and set that session field to:
+For a private GHCR package, run `docker login ghcr.io` first. The optional
+`SUNRAY_VNC_PASSWORD_FILE` variable supplies the Compose secret used by a
+session with `password_file: /run/secrets/vnc_password`.
 
-```yaml
-password_file: /run/secrets/vnc_password
-```
+### Docker Desktop and nested containers
 
-Point Compose at that source file when starting it:
-
-```sh
-SUNRAY_CONFIG=./config.yaml \
-SUNRAY_VNC_PASSWORD_FILE=/absolute/path/to/vnc_password \
-docker compose up
-```
-
-Compose mounts the password read-only as `/run/secrets/vnc_password`. The image
-runs as UID/GID 65534, so the source secret must be readable by that identity;
-on Linux it can be owned by `65534:65534` with mode `0400`. Some Compose engines
-implement file-backed secrets with bind mounts and ignore requested ownership
-metadata, so verify readability after changing its permissions. The `assets`
-directory is mounted at `/etc/sunray/assets` for optional card-test images and
-SSH terminal fonts. The local `config.yaml` and real secret files are excluded
-from the Docker build context. The Debian runtime also contains FreeRDP, Xvfb,
-and the loopback VNC bridge required by RDP sessions.
-
-Docker Desktop requires host networking to be enabled explicitly. Open
-**Settings > Resources > Network**, check **Enable host networking**, then choose
-**Apply & restart** before starting this Compose project. Without that setting,
-Compose still accepts `network_mode: host`, but TCP 7009 is not exposed on the
-Mac and the Sun Ray cannot discover or connect to the server. After Docker
-Desktop restarts, recreate the container:
-
-```sh
-docker compose down
-SUNRAY_CONFIG=./config.yaml docker compose up
-```
-
-Confirm from the Mac that the authentication listener is reachable:
-
-```sh
-nc -vz 127.0.0.1 7009
-```
-
-Docker Desktop proxies incoming host-network connections. If the authentication
-log reports `client_ip=::1` rather than the Sun Ray's LAN address, configure the
-real destination by terminal serial number:
+On Docker Desktop, enable **Settings → Resources → Network → host networking**
+before starting Compose. If the server logs `client_ip=::1`, Docker Desktop is
+proxying the connection; map the terminal's serial to its stable IPv4 address:
 
 ```yaml
 server:
@@ -490,155 +192,53 @@ server:
     "00144fd19044": 192.168.30.153
 ```
 
-The override affects only the UDP display destination; session routing still
-uses the same serial normally. Add one entry per terminal when several Sun Rays
-connect through Docker Desktop. Native Linux and native `sunrayd` operation can
-omit this map because the TCP peer address remains visible.
+When Compose runs inside a minimal Alpine container, `COMPOSE_MENU=false`
+suppresses the harmless `termbox: unsupported terminal` warning. If a custom
+`/tmp` mount is used, keep `/tmp/.X11-unix` as a root-owned directory with mode
+`1777`; otherwise Xvfb may fail to select a display. No physical screen is
+needed, including in a PVE/LXC container.
 
-When Docker Compose itself runs inside a minimal Alpine container, its optional
-interactive menu may print `termbox: unsupported terminal`. This message comes
-from the Compose CLI rather than `sunrayd` and can be disabled without affecting
-the service:
+## Sun Ray networking
 
-```sh
-COMPOSE_MENU=false docker compose up
-```
+The terminal must discover this server using the same DHCP/DNS/static settings
+that were used for kOpenRay. Permit:
 
-The supplied image creates `/tmp/.X11-unix` as a root-owned mode `1777`
-directory before switching to UID/GID 65534. This is required by Xvfb for RDP
-sessions. If the container is customized with a `/tmp` bind mount or tmpfs,
-ensure that mount also contains a root-owned `/tmp/.X11-unix` directory with
-mode `1777`; otherwise Xvfb reports `euid != 0` and cannot select a display.
+- TCP `7009` for authentication;
+- dynamic bidirectional UDP between the server and the terminal for display;
+- TCP `4120` only when the optional smart-card probe is enabled.
 
-## Point the Sun Ray at the server
+The Sun Ray display transport currently uses no encryption. Classic VNC
+authentication and RFB traffic are also unencrypted. Keep the service on an
+isolated trusted LAN or use an external tunnel/VPN.
 
-Use the same DHCP/DNS/static-server configuration that previously pointed the
-terminal at kOpenRay. Depending on the terminal firmware, this may involve the
-`sunray-config-servers` and `sunray-servers` DNS names, Sun Ray-specific DHCP
-options, or a server address configured from the terminal menu.
+## Standard keyboard shortcuts
 
-### Sun Ray 2 shortcuts with a standard keyboard
-
-A Sun keyboard is not required to open the Sun Ray 2 configuration and
-diagnostic screens. With a standard PC keyboard, hold `Ctrl` and press the
-following key sequence:
+With a normal PC keyboard, hold `Ctrl` and press `Pause/Break`, then:
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl` + `Pause/Break` + `M` | Open the configuration menu. |
-| `Ctrl` + `Pause/Break` + `V` | Display firmware version information. |
-| `Ctrl` + `Pause/Break` + `C` | Display the clear-configuration options. |
+| `Ctrl` + `Pause/Break` + `M` | Open the Sun Ray configuration menu |
+| `Ctrl` + `Pause/Break` + `V` | Show firmware version information |
+| `Ctrl` + `Pause/Break` + `C` | Show clear-configuration options |
 
-On compact keyboards, `Pause/Break` may require the keyboard's `Fn` modifier.
+On compact keyboards, `Pause/Break` may require `Fn`.
 
-macOS or Linux firewall rules must permit inbound TCP 7009. TCP 4120 is needed
-only when the optional smart-card probe is enabled. The terminal also
-publishes its UDP display port as the authentication property `pn`; the server
-uses an ephemeral local UDP port to communicate with it, so the isolated LAN
-must allow bidirectional UDP traffic between the terminal and server.
+## Troubleshooting
 
-Expected log sequence:
+- **The terminal cannot connect:** check TCP 7009, Sun Ray discovery settings,
+  and host networking. On Docker Desktop, add `server.terminal_ips` when the
+  log shows `client_ip=::1`.
+- **The display is slow or resends repeat:** keep `log_input_events: false`,
+  reduce the logical resolution, and try a larger `packet_delay` such as
+  `300us` or `1ms`.
+- **RDP stops before showing a desktop:** verify that `xfreerdp`, `Xvfb`, and
+  `x11vnc` are present; in a customized container also verify `/tmp/.X11-unix`
+  permissions.
+- **The interactive Compose menu warns about terminfo:** set
+  `COMPOSE_MENU=false`; this is a Compose CLI warning, not a Sun Ray error.
 
-```text
-Sun Ray authentication server listening
-authentication client connected
-Sun Ray information ...
-session selected ... slot=no-card session=card-test
-display channel opened ... terminal_udp=... server_udp=... resolution=...
-session starting ... session=card-test type=card-test
-card-test session displayed ... session=card-test
-```
+## License
 
-With `-vnc`, the test/card image remains visible while the connection is being
-established. A successful connection then logs:
-
-```text
-VNC session connected ... server=192.168.30.10:5900 desktop=... resolution=(...,...)
-```
-
-The VNC session automatically reconnects after network or server failures.
-
-A successful SSH connection logs:
-
-```text
-SSH session connected ... server=192.168.30.20:22 username=user terminal=91x27
-```
-
-An RDP session first logs its helper stack and then the loopback VNC connection:
-
-```text
-RDP helper stack started ... server=192.168.30.30:3389 resolution=1400x1050
-VNC session connected ... server=127.0.0.1:... desktop=... framebuffer_resolution=(1400,1050)
-```
-
-When `server.log_input_events` is enabled, keyboard and pointer activity
-produces structured lines such as:
-
-```text
-keyboard input ... hid=0x04 pressed=true modifiers=0x00
-keyboard input ... hid=0x04 pressed=false modifiers=0x00
-pointer input ... x=320 y=200 buttons=0x01
-```
-
-The HID value is preserved instead of being converted prematurely, allowing
-the VNC, SSH and RDP adapters to apply their own key mappings.
-
-When the optional probe is enabled, a terminal that opens its smart-card service channel
-will additionally produce logs such as:
-
-```text
-smart-card service connection detected client=192.168.30.153:...
-smart-card probe frame ... hex=...
-ATR detected ... atr=... protocols=T=0
-```
-
-The probe does not answer the terminal's PC/SC/scbus handshake. Therefore a
-connection or raw frame without an `ATR detected` line is still a useful first
-result: retain the complete debug log so that the next step can implement the
-minimum required handshake. No connection on TCP 4120 means the terminal has
-not attempted the separate smart-card service, which may require firmware or
-server-discovery configuration.
-
-An ATR normally identifies a card family and its supported transport protocol,
-not a guaranteed unique physical-card serial number. Two cards with identical
-ATRs still require a card-specific command to distinguish them, and this probe
-deliberately does not issue one.
-
-Expected screen result: a centered six-color checkerboard test image with a
-white border on a black background. A dark panel shows the current card reader
-state, reported card type and card ID. `PSEUDO` selects the `no-card` session
-slot. A physical card reported as `T1unknown` with an all-zero ID selects the
-`card-present` slot. Transient `remove` messages are ignored because this
-firmware pairs them with the definitive next `insert` state.
-
-## Real-hardware acceptance checklist
-
-- The terminal connects and logs its serial number and native resolution.
-- Inserting and removing a card changes the authentication event, even if the
-  firmware reports an all-zero `card_id`.
-- Logs alternate reliably between `slot=no-card` and `slot=card-present`, with
-  the configured session name.
-- Pressing and releasing a key logs matching HID transitions.
-- Moving, clicking and scrolling the mouse logs coordinates and button masks.
-- A configured VNC desktop replaces the test image after connection.
-- Keyboard, pointer buttons, movement and wheel events reach the VNC server.
-- Restarting the VNC server causes an automatic reconnect without restarting `sunrayd`.
-- A configured SSH session displays a shell prompt and accepts text, arrow,
-  Enter, Backspace, Ctrl and Alt input.
-- A configured RDP session reaches the Windows login/desktop at the selected
-  resolution and accepts pointer, button, wheel, and keyboard input.
-- Removing the card returns the panel to `READER READY` without restarting the server.
-- The generated test pattern is centered and has correct RGB colors.
-- No bands, stale regions or persistent corruption remain after retransmits.
-- Removing and reinserting the card starts a clean display session.
-- The server remains responsive after disconnecting and reconnecting Ethernet.
-
-If the image is incomplete, rerun with a larger packet delay, for example
-`-packet-delay 1ms`, and retain the debug log plus a packet capture for protocol
-comparison with kOpenRay.
-
-## License and provenance
-
-The ALP authentication and display encoding are derived from kOpenRay/jOpenRay.
-Source files carry `SPDX-License-Identifier: GPL-2.0-or-later`; see `NOTICE` and
-`LICENSE`.
+The ALP authentication/display implementation is derived from
+kOpenRay/jOpenRay. Source files are GPL-2.0-or-later; see [LICENSE](LICENSE)
+and [NOTICE](NOTICE).
