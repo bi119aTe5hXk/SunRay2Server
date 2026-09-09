@@ -32,13 +32,14 @@ type Config struct {
 	ScreenHeight     int
 	BrowserNoSandbox bool
 	Interactive      bool
+	ReloadInterval   time.Duration
 	Logger           *slog.Logger
 	OnFrame          func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
 
 // Session keeps the browser alive so JavaScript, WebSocket, SSE, and page
-// timers continue to update normally. There is deliberately no periodic page
-// reload or screenshot timer: x11vnc reports framebuffer changes as they occur.
+// timers continue to update normally. By default there is no page reload or
+// screenshot timer; x11vnc reports framebuffer changes as they occur.
 type Session struct {
 	config  Config
 	mu      sync.RWMutex
@@ -124,7 +125,7 @@ func (s *Session) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.startProcess(runCtx, "x11vnc", x11vncPath, x11vncArguments(displayName, port), displayEnv, exits); err != nil {
+	if err := s.startProcess(runCtx, "x11vnc", x11vncPath, x11vncArguments(displayName, port, s.config.Interactive), displayEnv, exits); err != nil {
 		return err
 	}
 	arguments := chromiumArguments(s.config, filepath.Join(runtimeDir, "profile"))
@@ -151,6 +152,9 @@ func (s *Session) Run(ctx context.Context) error {
 		s.mu.Unlock()
 	}()
 	go bridge.Run(runCtx)
+	if s.config.ReloadInterval > 0 {
+		go s.reloadLoop(runCtx)
+	}
 
 	s.config.Logger.Info("web helper stack started", "url", s.config.URL,
 		"resolution", fmt.Sprintf("%dx%d", s.config.ScreenWidth, s.config.ScreenHeight))
@@ -165,6 +169,30 @@ func (s *Session) Run(ctx context.Context) error {
 			return fmt.Errorf("%s exited unexpectedly", exit.name)
 		}
 		return fmt.Errorf("%s exited: %w", exit.name, exit.err)
+	}
+}
+
+func (s *Session) reloadLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.config.ReloadInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.RLock()
+			current := s.current
+			s.mu.RUnlock()
+			if current == nil {
+				continue
+			}
+			// F5 avoids leaving a modifier held if the local VNC connection is
+			// interrupted between events. This internal action remains available
+			// when the public session is configured as display-only.
+			current.HandleInput(display.InputEvent{Kind: display.InputKey, HID: 0x3E, Pressed: true})
+			current.HandleInput(display.InputEvent{Kind: display.InputKey, HID: 0x3E, Pressed: false})
+			s.config.Logger.Debug("web page reloaded", "interval", s.config.ReloadInterval)
+		}
 	}
 }
 
@@ -203,13 +231,20 @@ func chromiumArguments(config Config, profileDir string) []string {
 	return arguments
 }
 
-func x11vncArguments(displayName string, port int) []string {
-	return []string{
+func x11vncArguments(displayName string, port int, interactive bool) []string {
+	arguments := []string{
 		"-display", displayName, "-localhost", "-rfbport", strconv.Itoa(port),
 		"-forever", "-shared", "-nopw", "-xkb", "-quiet",
 		"-defer", "5", "-wait", "5", "-nowait_bog", "-speeds", "lan",
 		"-wirecopyrect", "always", "-scrollcopyrect", "always",
 	}
+	if !interactive {
+		// Without cursor-shape support in the downstream VNC client, x11vnc's
+		// default is to composite the X11 pointer directly into framebuffer
+		// pixels. Disable it for a genuinely cursor-free display-only page.
+		arguments = append(arguments, "-nocursor")
+	}
+	return arguments
 }
 
 func (s *Session) startXvfb(ctx context.Context, path, runtimeDir string, env []string, exits chan processExit) (string, error) {

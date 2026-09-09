@@ -88,6 +88,7 @@ sessions:
     type: vnc
     address: 192.168.30.10:5900
     password: change-me
+    interactive: true
     resolution_mode: current
   admin-ssh:
     type: ssh
@@ -109,6 +110,10 @@ Passwords are per session. Use `password_file` instead of inline `password`
 when the configuration is shared or committed. They are mutually exclusive.
 Relative image, font, key, known-hosts, and password paths are resolved from
 the directory containing `config.yaml`.
+
+Web, VNC, and RDP sessions accept `interactive`. It defaults to `true`; setting
+it to `false` disables keyboard, mouse, button, and wheel input and hides the
+cursor for a display-only session.
 
 ### Display geometry
 
@@ -152,16 +157,18 @@ sessions:
   dashboard:
     type: web
     url: https://example.com/
+    interactive: false
+    reload_interval: 30m # optional; omit or use 0 to disable automatic reload
     resolution_mode: current
     browser_no_sandbox: true # commonly required by Docker/LXC
 ```
 
-`interactive` defaults to `true`, forwarding mouse, wheel, and keyboard input to
-Chromium and showing the Sun Ray local cursor. Set it to `false` for a
-display-only page: all keyboard and mouse input is ignored and the cursor is
-hidden. When interaction is enabled, `Ctrl+R` or `F5` reloads, `Alt+Left` goes
-back, and `Alt+Right` goes forward. Web sessions support the same `current`,
-`terminal`, and `manual` resolution modes as RDP.
+`reload_interval` accepts Go-style durations such as `30s`, `10m`, or `2h` and
+performs a real browser reload at that interval. It defaults to `0`, so pages
+that update themselves remain loaded indefinitely. Automatic reload also works
+with `interactive: false`. When interaction is enabled, `Ctrl+R` or `F5`
+reloads, `Alt+Left` goes back, and `Alt+Right` goes forward. Web sessions support
+the same `current`, `terminal`, and `manual` resolution modes as RDP.
 
 Chromium's sandbox is enabled by default in the application. Docker and nested
 LXC environments commonly block the required namespaces, so the supplied YAML

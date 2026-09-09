@@ -47,6 +47,8 @@ sessions:
     type: web
     url: https://example.com/
     interactive: true
+    # Optional automatic page reload. Omit or use 0 to keep the page loaded.
+    # reload_interval: 30m
     # current, terminal, or manual.
     resolution_mode: current
     # display_width: 1400
@@ -59,6 +61,8 @@ sessions:
   example-vnc:
     type: vnc
     address: 192.168.30.10:5900
+    # false disables all input and hides local/compatible remote cursors.
+    interactive: true
     # current  = fit the full VNC desktop into the calibrated/global size
     # terminal = fit it into the original startRes reported by the Sun Ray
     # vnc      = native VNC framebuffer size, including later resizes
@@ -103,6 +107,8 @@ sessions:
   #   hostname: 192.168.30.30
   #   port: 3389
   #   username: user
+  #   # false disables all input and hides the cursor.
+  #   interactive: true
   #   # domain: WORKGROUP
   #   password: change-me
   #   # password_file: /run/secrets/rdp_password

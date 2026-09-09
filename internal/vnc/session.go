@@ -16,13 +16,15 @@ import (
 )
 
 type Config struct {
-	Address      string
-	Password     string
-	ScreenWidth  int
-	ScreenHeight int
-	ScaleToFit   bool
-	Logger       *slog.Logger
-	OnFrame      func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
+	Address          string
+	Password         string
+	ScreenWidth      int
+	ScreenHeight     int
+	ScaleToFit       bool
+	ViewOnly         bool
+	HideRemoteCursor bool
+	Logger           *slog.Logger
+	OnFrame          func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
 
 // Session maintains one reconnecting VNC client and accepts Sun Ray input even
@@ -86,7 +88,7 @@ func (s *Session) Run(ctx context.Context) {
 			// crop limited to the physical Sun Ray canvas.
 			requestWidth, requestHeight = 0, 0
 		}
-		conn, desktop, err := dial(ctx, s.config.Address, s.config.Password, requestWidth, requestHeight, s.handleFrame)
+		conn, desktop, err := dial(ctx, s.config.Address, s.config.Password, requestWidth, requestHeight, s.config.HideRemoteCursor, s.handleFrame)
 		if err != nil {
 			s.config.Logger.Warn("VNC connection failed", "server", s.config.Address, "error", err)
 			if !waitForRetry(ctx) {
@@ -146,6 +148,9 @@ func waitForRetry(ctx context.Context) bool {
 
 // HandleInput forwards one decoded Sun Ray event to the active RFB connection.
 func (s *Session) HandleInput(event display.InputEvent) {
+	if s.config.ViewOnly {
+		return
+	}
 	s.mu.RLock()
 	conn := s.current
 	s.mu.RUnlock()

@@ -31,6 +31,11 @@ sessions:
     password: test
     insecure_ignore_host_key: true
     font_file: assets/terminal.ttf
+  web:
+    type: web
+    url: https://example.test/
+    interactive: false
+    reload_interval: 10m
 routing:
   default:
     no_card: test
@@ -54,6 +59,9 @@ routing:
 	}
 	if cfg.Sessions["ssh"].FontFile != filepath.Join(directory, "assets/terminal.ttf") || cfg.Sessions["ssh"].FontSize != 20 {
 		t.Fatalf("SSH font defaults/paths = %#v", cfg.Sessions["ssh"])
+	}
+	if cfg.Sessions["web"].InteractiveEnabled() || cfg.Sessions["web"].ReloadInterval != 10*time.Minute {
+		t.Fatalf("web interaction/reload settings = %#v", cfg.Sessions["web"])
 	}
 }
 
@@ -291,17 +299,32 @@ func TestProjectTemplateLoads(t *testing.T) {
 	if cfg.Sessions["card-test"].Type != "card-test" || cfg.Sessions["geometry-test"].Type != "geometry-test" || cfg.Sessions["example-vnc"].Type != "vnc" || cfg.Sessions["example-web"].Type != "web" {
 		t.Fatalf("unexpected template sessions: %#v", cfg.Sessions)
 	}
-	if !cfg.Sessions["example-web"].WebInteractive() {
+	if !cfg.Sessions["example-web"].InteractiveEnabled() {
 		t.Fatal("template web session unexpectedly disables interaction")
 	}
 }
 
-func TestWebInteractiveDefaultsEnabledAndHonorsFalse(t *testing.T) {
-	if !(Session{Type: "web"}).WebInteractive() {
+func TestInteractiveDefaultsEnabledAndHonorsFalse(t *testing.T) {
+	if !(Session{Type: "vnc"}).InteractiveEnabled() {
 		t.Fatal("omitted interactive option should default to enabled")
 	}
 	disabled := false
-	if (Session{Type: "web", Interactive: &disabled}).WebInteractive() {
+	if (Session{Type: "rdp", Interactive: &disabled}).InteractiveEnabled() {
 		t.Fatal("explicit interactive false should disable interaction")
+	}
+}
+
+func TestWebReloadIntervalRejectsSubsecondValues(t *testing.T) {
+	cfg := Default()
+	cfg.Sessions["web"] = Session{Type: "web", URL: "https://example.test", ReloadInterval: 500 * time.Millisecond}
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected subsecond reload_interval to fail")
+	}
+	session := cfg.Sessions["web"]
+	session.ReloadInterval = time.Second
+	cfg.Sessions["web"] = session
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("1s reload_interval should be valid: %v", err)
 	}
 }

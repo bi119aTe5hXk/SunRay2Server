@@ -50,7 +50,7 @@ func TestChromiumNoSandboxMustBeExplicit(t *testing.T) {
 }
 
 func TestWebX11VNCArgumentsKeepLowLatencyInputAndUpdates(t *testing.T) {
-	joined := strings.Join(x11vncArguments(":42", 5901), " ")
+	joined := strings.Join(x11vncArguments(":42", 5901, true), " ")
 	for _, expected := range []string{
 		"-display :42", "-localhost", "-rfbport 5901", "-xkb",
 		"-defer 5", "-wait 5", "-wirecopyrect always", "-scrollcopyrect always",
@@ -58,6 +58,16 @@ func TestWebX11VNCArgumentsKeepLowLatencyInputAndUpdates(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("missing %q in %q", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "-nocursor") {
+		t.Fatalf("interactive web session unexpectedly hides X11 cursor: %q", joined)
+	}
+}
+
+func TestWebX11VNCArgumentsHideCursorWhenInteractionIsDisabled(t *testing.T) {
+	joined := strings.Join(x11vncArguments(":42", 5901, false), " ")
+	if !strings.Contains(joined, "-nocursor") {
+		t.Fatalf("display-only web session does not hide X11 cursor: %q", joined)
 	}
 }
 

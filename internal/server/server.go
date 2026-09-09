@@ -464,15 +464,18 @@ func sessionPassword(definition appconfig.Session) (string, error) {
 
 func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, password string, logger *slog.Logger) {
 	mode, screenWidth, screenHeight := vncDisplayGeometry(active, definition)
-	logger.Info("VNC display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight))
+	interactive := definition.InteractiveEnabled()
+	logger.Info("VNC display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight), "interactive", interactive)
 	firstFrame := true
 	session := vnc.NewSession(vnc.Config{
-		Address:      definition.Address,
-		Password:     password,
-		ScreenWidth:  screenWidth,
-		ScreenHeight: screenHeight,
-		ScaleToFit:   mode != appconfig.VNCResolutionServer,
-		Logger:       logger,
+		Address:          definition.Address,
+		Password:         password,
+		ScreenWidth:      screenWidth,
+		ScreenHeight:     screenHeight,
+		ScaleToFit:       mode != appconfig.VNCResolutionServer,
+		ViewOnly:         !interactive,
+		HideRemoteCursor: !interactive,
+		Logger:           logger,
 		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
@@ -486,26 +489,34 @@ func (s *Server) startVNC(ctx context.Context, key string, active activeDisplay,
 				if err := active.client.ShowImage(displayWidth, displayHeight, frame); err != nil {
 					return err
 				}
-				return active.client.Send(display.LocalCursor())
+				if interactive {
+					return active.client.Send(display.LocalCursor())
+				}
+				return active.client.Send(display.InvisibleCursor())
 			}
 			return active.client.ShowImageRegions(displayWidth, displayHeight, frame, changed)
 		},
 	})
 	active.client.SetResyncHandler(session.RequestFullFrame)
-	active.client.SetInputHandler(session.HandleInput)
+	if interactive {
+		active.client.SetInputHandler(session.HandleInput)
+	} else {
+		active.client.SetInputHandler(nil)
+	}
 	session.Run(ctx)
 }
 
 func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, password string, logger *slog.Logger) {
 	mode, screenWidth, screenHeight := rdpDisplayGeometry(active, definition)
 	address := net.JoinHostPort(definition.Hostname, strconv.Itoa(definition.Port))
-	logger.Info("RDP display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight))
+	interactive := definition.InteractiveEnabled()
+	logger.Info("RDP display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight), "interactive", interactive)
 	firstFrame := true
 	session := rdp.NewSession(rdp.Config{
 		Hostname: definition.Hostname, Port: definition.Port,
 		Username: definition.Username, Domain: definition.Domain, Password: password,
 		Certificate: definition.Certificate, ScreenWidth: screenWidth, ScreenHeight: screenHeight,
-		Logger: logger,
+		Interactive: interactive, Logger: logger,
 		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
@@ -515,13 +526,20 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 				if err := active.client.ShowImage(screenWidth, screenHeight, frame); err != nil {
 					return err
 				}
-				return active.client.Send(display.LocalCursor())
+				if interactive {
+					return active.client.Send(display.LocalCursor())
+				}
+				return active.client.Send(display.InvisibleCursor())
 			}
 			return active.client.ShowImageRegions(screenWidth, screenHeight, frame, changed)
 		},
 	})
 	active.client.SetResyncHandler(session.RequestFullFrame)
-	active.client.SetInputHandler(session.HandleInput)
+	if interactive {
+		active.client.SetInputHandler(session.HandleInput)
+	} else {
+		active.client.SetInputHandler(nil)
+	}
 	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Warn("RDP session stopped", "server", address, "error", err)
 		if s.isCurrentSession(key, active.client, generation) {
@@ -533,12 +551,13 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 
 func (s *Server) startWeb(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, logger *slog.Logger) {
 	mode, screenWidth, screenHeight := webDisplayGeometry(active, definition)
-	interactive := definition.WebInteractive()
+	interactive := definition.InteractiveEnabled()
 	logger.Info("web display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight), "interactive", interactive)
 	firstFrame := true
 	session := web.NewSession(web.Config{
 		URL: definition.URL, ScreenWidth: screenWidth, ScreenHeight: screenHeight,
-		BrowserNoSandbox: definition.BrowserNoSandbox, Interactive: interactive, Logger: logger,
+		BrowserNoSandbox: definition.BrowserNoSandbox, Interactive: interactive,
+		ReloadInterval: definition.ReloadInterval, Logger: logger,
 		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled

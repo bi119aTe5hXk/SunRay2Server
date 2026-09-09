@@ -30,7 +30,7 @@ func TestFreeRDPArguments(t *testing.T) {
 }
 
 func TestX11VNCArgumentsEnableLowLatencyCopyRect(t *testing.T) {
-	arguments := x11vncArguments(":42", 5901)
+	arguments := x11vncArguments(":42", 5901, true)
 	joined := strings.Join(arguments, " ")
 	for _, expected := range []string{
 		"-display :42", "-rfbport 5901", "-defer 5", "-wait 5",
@@ -39,6 +39,16 @@ func TestX11VNCArgumentsEnableLowLatencyCopyRect(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("missing %q in %q", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "-nocursor") {
+		t.Fatalf("interactive RDP session unexpectedly hides cursor: %q", joined)
+	}
+}
+
+func TestX11VNCArgumentsHideCursorForDisplayOnlyRDP(t *testing.T) {
+	joined := strings.Join(x11vncArguments(":42", 5901, false), " ")
+	if !strings.Contains(joined, "-nocursor") {
+		t.Fatalf("display-only RDP session does not hide cursor: %q", joined)
 	}
 }
 

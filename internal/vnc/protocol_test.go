@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"io"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -140,6 +141,39 @@ func TestSetEncodingsPrefersCopyRect(t *testing.T) {
 			}
 			if first := int32(binary.BigEndian.Uint32(message[4:8])); first != encodingCopyRect {
 				t.Errorf("first encoding = %d, want CopyRect", first)
+			}
+		}
+		done <- err
+	}()
+	if err := c.setEncodings(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetEncodingsRequestsDisposableCursorForDisplayOnlySession(t *testing.T) {
+	clientSide, serverSide := net.Pipe()
+	defer clientSide.Close()
+	defer serverSide.Close()
+	c := &connection{Conn: clientSide, hideRemoteCursor: true}
+	done := make(chan error, 1)
+	go func() {
+		message := make([]byte, 28)
+		_, err := io.ReadFull(serverSide, message)
+		if err == nil {
+			if count := binary.BigEndian.Uint16(message[2:4]); count != 6 {
+				t.Errorf("encoding count = %d, want 6", count)
+			}
+			got := make([]int32, 0, 6)
+			for offset := 4; offset < len(message); offset += 4 {
+				got = append(got, int32(binary.BigEndian.Uint32(message[offset:offset+4])))
+			}
+			for _, want := range []int32{encodingRichCursor, encodingXCursor, encodingPointerPos} {
+				if !slices.Contains(got, want) {
+					t.Errorf("missing cursor encoding %d in %v", want, got)
+				}
 			}
 		}
 		done <- err

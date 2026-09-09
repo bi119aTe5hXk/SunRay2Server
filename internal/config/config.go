@@ -51,34 +51,35 @@ type Server struct {
 }
 
 type Session struct {
-	Type                  string  `yaml:"type"`
-	Address               string  `yaml:"address,omitempty"`
-	Image                 string  `yaml:"image,omitempty"`
-	Hostname              string  `yaml:"hostname,omitempty"`
-	Port                  int     `yaml:"port,omitempty"`
-	Username              string  `yaml:"username,omitempty"`
-	Domain                string  `yaml:"domain,omitempty"`
-	Password              string  `yaml:"password,omitempty"`
-	PasswordFile          string  `yaml:"password_file,omitempty"`
-	PrivateKeyFile        string  `yaml:"private_key_file,omitempty"`
-	KnownHostsFile        string  `yaml:"known_hosts_file,omitempty"`
-	HostKeySHA256         string  `yaml:"host_key_sha256,omitempty"`
-	InsecureIgnoreHostKey bool    `yaml:"insecure_ignore_host_key,omitempty"`
-	FontFile              string  `yaml:"font_file,omitempty"`
-	FontSize              float64 `yaml:"font_size,omitempty"`
-	ResolutionMode        string  `yaml:"resolution_mode,omitempty"`
-	DisplayWidth          int     `yaml:"display_width,omitempty"`
-	DisplayHeight         int     `yaml:"display_height,omitempty"`
-	Certificate           string  `yaml:"certificate,omitempty"`
-	URL                   string  `yaml:"url,omitempty"`
-	BrowserNoSandbox      bool    `yaml:"browser_no_sandbox,omitempty"`
-	Interactive           *bool   `yaml:"interactive,omitempty"`
+	Type                  string        `yaml:"type"`
+	Address               string        `yaml:"address,omitempty"`
+	Image                 string        `yaml:"image,omitempty"`
+	Hostname              string        `yaml:"hostname,omitempty"`
+	Port                  int           `yaml:"port,omitempty"`
+	Username              string        `yaml:"username,omitempty"`
+	Domain                string        `yaml:"domain,omitempty"`
+	Password              string        `yaml:"password,omitempty"`
+	PasswordFile          string        `yaml:"password_file,omitempty"`
+	PrivateKeyFile        string        `yaml:"private_key_file,omitempty"`
+	KnownHostsFile        string        `yaml:"known_hosts_file,omitempty"`
+	HostKeySHA256         string        `yaml:"host_key_sha256,omitempty"`
+	InsecureIgnoreHostKey bool          `yaml:"insecure_ignore_host_key,omitempty"`
+	FontFile              string        `yaml:"font_file,omitempty"`
+	FontSize              float64       `yaml:"font_size,omitempty"`
+	ResolutionMode        string        `yaml:"resolution_mode,omitempty"`
+	DisplayWidth          int           `yaml:"display_width,omitempty"`
+	DisplayHeight         int           `yaml:"display_height,omitempty"`
+	Certificate           string        `yaml:"certificate,omitempty"`
+	URL                   string        `yaml:"url,omitempty"`
+	BrowserNoSandbox      bool          `yaml:"browser_no_sandbox,omitempty"`
+	Interactive           *bool         `yaml:"interactive,omitempty"`
+	ReloadInterval        time.Duration `yaml:"reload_interval,omitempty"`
 }
 
-// WebInteractive reports whether a web session accepts local input. A pointer
-// preserves the distinction between an omitted option (enabled by default) and
-// an explicit false value in YAML.
-func (s Session) WebInteractive() bool {
+// InteractiveEnabled reports whether a remote session accepts local input. A
+// pointer preserves the distinction between an omitted option (enabled by
+// default) and an explicit false value in YAML.
+func (s Session) InteractiveEnabled() bool {
 	return s.Interactive == nil || *s.Interactive
 }
 
@@ -267,6 +268,9 @@ func (c *Config) Validate() error {
 				}
 			default:
 				return fmt.Errorf("session %q has invalid web resolution_mode %q", name, session.ResolutionMode)
+			}
+			if session.ReloadInterval < 0 || (session.ReloadInterval > 0 && session.ReloadInterval < time.Second) {
+				return fmt.Errorf("session %q reload_interval must be 0 or at least 1s", name)
 			}
 		case "ssh", "rdp":
 			if strings.TrimSpace(session.Hostname) == "" {

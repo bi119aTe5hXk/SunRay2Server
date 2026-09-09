@@ -28,6 +28,9 @@ const (
 
 	encodingRaw         = 0
 	encodingCopyRect    = 1
+	encodingXCursor     = -240
+	encodingRichCursor  = -239
+	encodingPointerPos  = -232
 	encodingDesktopSize = -223
 
 	maxDimension   = 8192
@@ -38,23 +41,24 @@ type frameHandler func(frame *image.RGBA, changed []display.RegionUpdate, resize
 
 type connection struct {
 	net.Conn
-	writeMu    sync.Mutex
-	stateMu    sync.RWMutex
-	width      int
-	height     int
-	viewWidth  int
-	viewHeight int
-	frame      *image.RGBA
-	onFrame    frameHandler
+	writeMu          sync.Mutex
+	stateMu          sync.RWMutex
+	width            int
+	height           int
+	viewWidth        int
+	viewHeight       int
+	hideRemoteCursor bool
+	frame            *image.RGBA
+	onFrame          frameHandler
 }
 
-func dial(ctx context.Context, address, password string, viewWidth, viewHeight int, onFrame frameHandler) (*connection, string, error) {
+func dial(ctx context.Context, address, password string, viewWidth, viewHeight int, hideRemoteCursor bool, onFrame frameHandler) (*connection, string, error) {
 	dialer := net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	netConn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return nil, "", fmt.Errorf("dial VNC server: %w", err)
 	}
-	c := &connection{Conn: netConn, viewWidth: viewWidth, viewHeight: viewHeight, onFrame: onFrame}
+	c := &connection{Conn: netConn, viewWidth: viewWidth, viewHeight: viewHeight, hideRemoteCursor: hideRemoteCursor, onFrame: onFrame}
 	name, err := c.handshake(password)
 	if err != nil {
 		netConn.Close()
@@ -304,6 +308,12 @@ func (c *connection) setEncodings() error {
 	// CopyRect is the highest-value encoding for a Sun Ray: the downstream
 	// ALP transport can reproduce it as one native 16-byte framebuffer copy.
 	encodings := []int32{encodingCopyRect, encodingRaw, encodingDesktopSize}
+	if c.hideRemoteCursor {
+		// Advertising cursor pseudo-encodings prevents compatible servers from
+		// baking the remote pointer into framebuffer pixels. Cursor updates are
+		// consumed below but deliberately not rendered.
+		encodings = append(encodings, encodingRichCursor, encodingXCursor, encodingPointerPos)
+	}
 	message := make([]byte, 4+4*len(encodings))
 	message[0] = 2
 	binary.BigEndian.PutUint16(message[2:4], uint16(len(encodings)))
@@ -420,6 +430,16 @@ func (c *connection) readFramebufferUpdate() error {
 			c.setSize(width, height)
 			changed = append(changed[:0], display.RegionUpdate{Rectangle: c.visibleBounds()})
 			resized = true
+		case encodingRichCursor:
+			if err := c.skipCursor(width, height, true); err != nil {
+				return err
+			}
+		case encodingXCursor:
+			if err := c.skipCursor(width, height, false); err != nil {
+				return err
+			}
+		case encodingPointerPos:
+			// Cursor position is carried entirely by the rectangle header.
 		default:
 			return fmt.Errorf("VNC server used unrequested encoding %d", encoding)
 		}
@@ -432,6 +452,25 @@ func (c *connection) readFramebufferUpdate() error {
 	err := c.onFrame(frame, changed, resized)
 	c.stateMu.RUnlock()
 	return err
+}
+
+func (c *connection) skipCursor(width, height int, rich bool) error {
+	if width < 0 || width > maxDimension || height < 0 || height > maxDimension {
+		return fmt.Errorf("invalid VNC cursor size %dx%d", width, height)
+	}
+	maskBytes := int64((width+7)/8) * int64(height)
+	payloadBytes := maskBytes * 2
+	if rich {
+		payloadBytes = int64(width)*int64(height)*4 + maskBytes
+	} else if width == 0 || height == 0 {
+		payloadBytes = 0
+	} else {
+		payloadBytes += 6 // foreground and background RGB colors
+	}
+	if _, err := io.CopyN(io.Discard, c, payloadBytes); err != nil {
+		return fmt.Errorf("read VNC cursor payload: %w", err)
+	}
+	return nil
 }
 
 func (c *connection) readRaw(rect image.Rectangle) error {

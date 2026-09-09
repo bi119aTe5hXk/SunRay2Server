@@ -33,6 +33,7 @@ type Config struct {
 	Certificate  string
 	ScreenWidth  int
 	ScreenHeight int
+	Interactive  bool
 	Logger       *slog.Logger
 	OnFrame      func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
@@ -58,6 +59,9 @@ func NewSession(config Config) *Session {
 }
 
 func (s *Session) HandleInput(event display.InputEvent) {
+	if !s.config.Interactive {
+		return
+	}
 	s.mu.RLock()
 	current := s.current
 	s.mu.RUnlock()
@@ -115,7 +119,7 @@ func (s *Session) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.startProcess(runCtx, "x11vnc", x11vncPath, x11vncArguments(displayName, port), displayEnv, nil, exits); err != nil {
+	if err := s.startProcess(runCtx, "x11vnc", x11vncPath, x11vncArguments(displayName, port, s.config.Interactive), displayEnv, nil, exits); err != nil {
 		return err
 	}
 
@@ -161,13 +165,17 @@ func (s *Session) Run(ctx context.Context) error {
 	}
 }
 
-func x11vncArguments(displayName string, port int) []string {
-	return []string{
+func x11vncArguments(displayName string, port int, interactive bool) []string {
+	arguments := []string{
 		"-display", displayName, "-localhost", "-rfbport", strconv.Itoa(port),
 		"-forever", "-shared", "-nopw", "-xkb", "-quiet",
 		"-defer", "5", "-wait", "5", "-nowait_bog", "-speeds", "lan",
 		"-wirecopyrect", "always", "-scrollcopyrect", "always",
 	}
+	if !interactive {
+		arguments = append(arguments, "-nocursor")
+	}
+	return arguments
 }
 
 func (s *Session) startXvfb(ctx context.Context, path, runtimeDir string, env []string, exits chan processExit) (string, error) {
