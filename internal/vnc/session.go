@@ -23,6 +23,7 @@ type Config struct {
 	ScaleToFit       bool
 	ViewOnly         bool
 	HideRemoteCursor bool
+	MaxFPS           int
 	Logger           *slog.Logger
 	OnFrame          func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
@@ -56,6 +57,13 @@ func NewSession(config Config) *Session {
 		pointerEvents: make(chan display.InputEvent, 1),
 		frameWake:     make(chan struct{}, 1),
 	}
+}
+
+func frameInterval(maxFPS int) time.Duration {
+	if maxFPS <= 0 {
+		return 0
+	}
+	return time.Second / time.Duration(maxFPS)
 }
 
 // RequestFullFrame schedules the latest complete framebuffer as a resize-style
@@ -353,6 +361,8 @@ func (s *Session) enqueueFrame(frame *image.RGBA, changed []display.RegionUpdate
 // RDP/VNC updates are coalesced while a Sun Ray refresh is in progress instead
 // of being replayed seconds later as stale UI frames.
 func (s *Session) frameLoop(ctx context.Context) {
+	interval := frameInterval(s.config.MaxFPS)
+	var nextFrame time.Time
 	lastStats := time.Now()
 	rawUpdates, copyUpdates := 0, 0
 	rawPixels, copyPixels := 0, 0
@@ -361,6 +371,20 @@ func (s *Session) frameLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.frameWake:
+		}
+		if wait := time.Until(nextFrame); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return
+			case <-timer.C:
+			}
 		}
 
 		s.frameMu.Lock()
@@ -379,9 +403,11 @@ func (s *Session) frameLoop(ctx context.Context) {
 		s.pendingResized = false
 		s.frameMu.Unlock()
 
+		started := time.Now()
 		if err := s.config.OnFrame(snapshot, changed, resized); err != nil && ctx.Err() == nil {
 			s.config.Logger.Debug("VNC framebuffer delivery failed", "error", err)
 		}
+		nextFrame = started.Add(interval)
 		for _, update := range changed {
 			if update.Copy {
 				copyUpdates++

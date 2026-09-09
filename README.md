@@ -83,12 +83,14 @@ sessions:
     type: web
     url: https://example.com/
     interactive: true
+    max_fps: 20
     resolution_mode: current
   office-vnc:
     type: vnc
     address: 192.168.30.10:5900
     password: change-me
     interactive: true
+    max_fps: 20
     resolution_mode: current
   admin-ssh:
     type: ssh
@@ -114,6 +116,9 @@ the directory containing `config.yaml`.
 Web, VNC, and RDP sessions accept `interactive`. It defaults to `true`; setting
 it to `false` disables keyboard, mouse, button, and wheel input and hides the
 cursor for a display-only session.
+
+Those graphical sessions also accept `max_fps` from `1` to `60`. It defaults
+to `20` and coalesces intermediate updates instead of queueing stale frames.
 
 ### Display geometry
 
@@ -275,8 +280,9 @@ On compact keyboards, `Pause/Break` may require `Fn`.
   and host networking. On Docker Desktop, add `server.terminal_ips` when the
   log shows `client_ip=::1`.
 - **The display is slow or resends repeat:** keep `log_input_events: false`,
-  reduce the logical resolution, and try a larger `packet_delay` such as
-  `300us` or `1ms`.
+  reduce the logical resolution, or lower the session's `max_fps` (the default
+  is `20`; `15` is a conservative starting point). `packet_delay` remains the
+  fixed low-level packet pacing value.
 - **Web or RDP stops before showing a desktop:** verify that Chromium or
   `xfreerdp`, plus `Xvfb` and `x11vnc`, are present; in a customized container
   also verify `/tmp/.X11-unix` permissions.

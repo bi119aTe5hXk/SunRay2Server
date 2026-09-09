@@ -47,6 +47,9 @@ sessions:
     type: web
     url: https://example.com/
     interactive: true
+    # Cap delivered display frames (1-60, default 20); lower this if a busy
+    # page triggers resends.
+    max_fps: 20
     # Optional automatic page reload. Omit or use 0 to keep the page loaded.
     # reload_interval: 30m
     # current, terminal, or manual.
@@ -63,6 +66,7 @@ sessions:
     address: 192.168.30.10:5900
     # false disables all input and hides local/compatible remote cursors.
     interactive: true
+    max_fps: 20
     # current  = fit the full VNC desktop into the calibrated/global size
     # terminal = fit it into the original startRes reported by the Sun Ray
     # vnc      = native VNC framebuffer size, including later resizes
@@ -109,6 +113,7 @@ sessions:
   #   username: user
   #   # false disables all input and hides the cursor.
   #   interactive: true
+  #   max_fps: 20
   #   # domain: WORKGROUP
   #   password: change-me
   #   # password_file: /run/secrets/rdp_password

@@ -18,6 +18,7 @@ const (
 	maxDatagramSize  = 1448
 	maxNACKRange     = operationSeqMod
 	maxResendCharge  = 256
+	maxDirectResend  = 512
 	maxHistorySize   = 8192
 	nackOpenEnded    = 0x00FFFFFF
 	operationSeqMod  = 1 << 16
@@ -237,7 +238,6 @@ func (c *Client) pacePacketLocked() {
 	c.burstStarted = time.Now()
 	c.burstPackets = 1
 }
-
 func (c *Client) readLoop() {
 	buffer := make([]byte, 1500)
 	for {
@@ -444,6 +444,34 @@ func (c *Client) resend(marker, from, to uint32) bool {
 			to += operationSeqMod
 		}
 	}
+	_, firstOperationAvailable := c.history[from]
+	if firstOperationAvailable && shouldReplaceResendWithSnapshot(from, to, c.opSeq) {
+		skipped := uint32(0)
+		if from <= to && from <= c.opSeq {
+			skipped = min(to, c.opSeq) - from + 1
+		}
+		if err := c.sendResendCompletionLocked(requestedTo); err != nil {
+			c.log.Warn("display snapshot resync acknowledgement failed", "error", err)
+			return false
+		}
+		now := time.Now()
+		clear(c.history)
+		c.resendWindowStart = time.Time{}
+		c.resendWindowCount = 0
+		c.resendWindowOps = 0
+		c.nackCooldownUntil.Store(now.Add(resendStormCooldown).UnixNano())
+		c.log.Warn("large display resend replaced with latest frame",
+			"marker", marker,
+			"requested_from", requestedFrom,
+			"requested_to", requestedTo,
+			"acknowledged_to", uint16(requestedTo),
+			"skipped_operations", skipped,
+			"packet_delay", c.delay,
+			"cooldown", resendStormCooldown,
+			"sequence", c.opSeq,
+		)
+		return true
+	}
 	resent := 0
 	lastResent := uint32(0)
 	var replay [][]byte
@@ -480,23 +508,36 @@ func (c *Client) resend(marker, from, to uint32) bool {
 		c.log.Warn("display resend failed", "from", from, "to", lastResent, "error", err)
 		return false
 	}
+	// The 0xAC acknowledgement echoes the requested end sequence, matching
+	// kOpenRay's UnknownACOperation(..., to). In particular an open-ended NACK
+	// must complete with 0xffff; reporting the last replayed drawing sequence
+	// makes Sun Ray 2 treat the range as incomplete and repeatedly replay old
+	// framebuffer operations.
+	if err := c.sendResendCompletionLocked(requestedTo); err != nil {
+		c.log.Warn("display resend completion failed", "error", err)
+		return false
+	}
+	c.logResendLocked(marker, from, to, lastResent, requestedFrom, requestedTo, resent)
+	return false
+}
+
+func shouldReplaceResendWithSnapshot(from, to, current uint32) bool {
+	if from > to || from > current {
+		return false
+	}
+	return min(to, current)-from+1 > maxDirectResend
+}
+
+func (c *Client) sendResendCompletionLocked(requestedTo uint32) error {
 	pad := Pad().WithSequence(uint16(c.opSeq)).Bytes
-	// Report the actual replay watermark. For an open-ended or future request,
-	// echoing 0xffff/requestedTo makes the terminal restart from the same
-	// beginning indefinitely even though only the current prefix was sent.
-	status := ResendDone(uint16(lastResent)).WithSequence(uint16(c.opSeq)).Bytes
+	status := ResendDone(uint16(requestedTo)).WithSequence(uint16(c.opSeq)).Bytes
 	// Pad and 0xAC form one completion message in the original protocol. If
 	// they are split across datagrams, or 0xAC consumes a new drawing sequence,
 	// the terminal can enter a self-sustaining resend loop.
 	completion := make([]byte, 0, len(pad)+len(status))
 	completion = append(completion, pad...)
 	completion = append(completion, status...)
-	if err := c.sendLocked(completion); err != nil {
-		c.log.Warn("display resend completion failed", "error", err)
-		return false
-	}
-	c.logResendLocked(marker, from, to, lastResent, requestedFrom, requestedTo, resent)
-	return false
+	return c.sendLocked(completion)
 }
 
 func (c *Client) logResendLocked(marker, from, to, watermark, requestedFrom, requestedTo uint32, resent int) {
@@ -513,6 +554,7 @@ func (c *Client) logResendLocked(marker, from, to, watermark, requestedFrom, req
 		"watermark", watermark,
 		"requested_from", requestedFrom,
 		"requested_to", requestedTo,
+		"acknowledged_to", uint16(requestedTo),
 		"requests_since_last_log", c.resendLogRequests,
 		"operations_since_last_log", c.resendLogOps,
 	)

@@ -207,8 +207,8 @@ func TestOperationSequenceExtendsAcrossWireWrap(t *testing.T) {
 	}
 	completion := readTestPacket(t, receiver)
 	statusOffset := packetHeaderSize + len(Pad().Bytes)
-	if got := binary.BigEndian.Uint16(completion[statusOffset+18 : statusOffset+20]); got != 0 {
-		t.Fatalf("open-ended completion watermark = %#x, want replayed sequence 0", got)
+	if got := binary.BigEndian.Uint16(completion[statusOffset+18 : statusOffset+20]); got != 0xFFFF {
+		t.Fatalf("open-ended completion watermark = %#x, want requested sentinel 0xffff", got)
 	}
 }
 
@@ -411,14 +411,80 @@ func TestResendStormClearsHistoryAndStartsCooldown(t *testing.T) {
 	}
 }
 
-func TestLargeMissingNACKDoesNotTriggerFullFrameResync(t *testing.T) {
+func TestLargeNACKAcknowledgesAndRequestsLatestFullFrame(t *testing.T) {
+	receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	remote := receiver.LocalAddr().(*net.UDPAddr)
+	client, err := Open(remote.IP, remote.Port, 150*time.Microsecond, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	client.mu.Lock()
+	clear(client.history)
+	client.opSeq = maxDirectResend + 1
+	for seq := uint32(1); seq <= client.opSeq; seq++ {
+		client.history[seq] = Fill(0, 0, 1, 1, testColor{}).WithSequence(uint16(seq)).Bytes
+	}
+	client.mu.Unlock()
+
+	if !client.resend(1, 1, nackOpenEnded) {
+		t.Fatal("large open-ended NACK did not request a latest-frame resync")
+	}
+	completion := readTestPacket(t, receiver)
+	statusOffset := packetHeaderSize + len(Pad().Bytes)
+	if got := completion[packetHeaderSize]; got != opPad {
+		t.Fatalf("first response opcode = %#x, want pad instead of stale replay", got)
+	}
+	if got := binary.BigEndian.Uint16(completion[statusOffset+18 : statusOffset+20]); got != 0xFFFF {
+		t.Fatalf("snapshot acknowledgement = %#x, want 0xffff", got)
+	}
+	client.mu.Lock()
+	historyLength := len(client.history)
+	client.mu.Unlock()
+	if historyLength != 0 {
+		t.Fatalf("history length after snapshot resync = %d, want 0", historyLength)
+	}
+	if got := time.Unix(0, client.nackCooldownUntil.Load()); !got.After(time.Now()) {
+		t.Fatalf("snapshot resync cooldown = %v, want a future time", got)
+	}
+	client.mu.Lock()
+	effectiveDelay := client.delay
+	client.mu.Unlock()
+	if effectiveDelay != 150*time.Microsecond {
+		t.Fatalf("configured packet delay changed after congestion: %v", effectiveDelay)
+	}
+}
+
+func TestFutureOpenEndedNACKDoesNotRequestFullFrame(t *testing.T) {
 	client := &Client{
 		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		opSeq:   11059,
-		history: make(map[uint32][]byte),
+		opSeq:   3487,
+		history: map[uint32][]byte{3487: {1}},
 	}
-	if client.resend(0, 0, 11059) {
-		t.Fatal("large missing NACK unexpectedly requested a full-frame resync")
+	if client.resend(1, 3488, nackOpenEnded) {
+		t.Fatal("future open-ended NACK unexpectedly requested a full-frame resync")
+	}
+	if client.nackCooldownUntil.Load() != 0 {
+		t.Fatal("future open-ended NACK unexpectedly started a resend cooldown")
+	}
+	if len(client.history) != 1 {
+		t.Fatalf("future open-ended NACK cleared history; length = %d", len(client.history))
+	}
+}
+
+func TestLargeMissingNACKDoesNotRequestFullFrame(t *testing.T) {
+	client := &Client{
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		opSeq:   2000,
+		history: map[uint32][]byte{2000: {1}},
+	}
+	if client.resend(1, 1, 1000) {
+		t.Fatal("large NACK with a missing first operation unexpectedly requested a full-frame resync")
 	}
 	if client.nackCooldownUntil.Load() != 0 {
 		t.Fatal("large missing NACK unexpectedly started a resend cooldown")

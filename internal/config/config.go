@@ -19,6 +19,11 @@ import (
 const CurrentVersion = 1
 
 const (
+	DefaultGraphicalMaxFPS = 20
+	MaximumGraphicalMaxFPS = 60
+)
+
+const (
 	VNCResolutionCurrent  = "current"
 	VNCResolutionTerminal = "terminal"
 	VNCResolutionServer   = "vnc"
@@ -74,6 +79,7 @@ type Session struct {
 	BrowserNoSandbox      bool          `yaml:"browser_no_sandbox,omitempty"`
 	Interactive           *bool         `yaml:"interactive,omitempty"`
 	ReloadInterval        time.Duration `yaml:"reload_interval,omitempty"`
+	MaxFPS                int           `yaml:"max_fps,omitempty"`
 }
 
 // InteractiveEnabled reports whether a remote session accepts local input. A
@@ -81,6 +87,15 @@ type Session struct {
 // default) and an explicit false value in YAML.
 func (s Session) InteractiveEnabled() bool {
 	return s.Interactive == nil || *s.Interactive
+}
+
+// FrameRate returns the configured graphical-session frame cap. Zero means
+// omitted in YAML and uses a conservative default suitable for Sun Ray 2.
+func (s Session) FrameRate() int {
+	if s.MaxFPS == 0 {
+		return DefaultGraphicalMaxFPS
+	}
+	return s.MaxFPS
 }
 
 type Routing struct {
@@ -152,6 +167,9 @@ func (c *Config) applyDefaults() {
 		session.Type = strings.ToLower(strings.TrimSpace(session.Type))
 		session.ResolutionMode = strings.ToLower(strings.TrimSpace(session.ResolutionMode))
 		session.Certificate = strings.TrimSpace(session.Certificate)
+		if (session.Type == "vnc" || session.Type == "rdp" || session.Type == "web") && session.MaxFPS == 0 {
+			session.MaxFPS = DefaultGraphicalMaxFPS
+		}
 		if session.Type == "vnc" && session.ResolutionMode == "" {
 			session.ResolutionMode = VNCResolutionCurrent
 		}
@@ -226,6 +244,11 @@ func (c *Config) Validate() error {
 	for name, session := range c.Sessions {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("session name cannot be empty")
+		}
+		if session.Type == "vnc" || session.Type == "rdp" || session.Type == "web" {
+			if session.MaxFPS != 0 && (session.MaxFPS < 1 || session.MaxFPS > MaximumGraphicalMaxFPS) {
+				return fmt.Errorf("session %q max_fps must be between 1 and %d", name, MaximumGraphicalMaxFPS)
+			}
 		}
 		switch session.Type {
 		case "card-test", "geometry-test":

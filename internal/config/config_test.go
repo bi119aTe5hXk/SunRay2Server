@@ -63,6 +63,9 @@ routing:
 	if cfg.Sessions["web"].InteractiveEnabled() || cfg.Sessions["web"].ReloadInterval != 10*time.Minute {
 		t.Fatalf("web interaction/reload settings = %#v", cfg.Sessions["web"])
 	}
+	if cfg.Sessions["web"].FrameRate() != DefaultGraphicalMaxFPS || cfg.Sessions["vnc"].FrameRate() != DefaultGraphicalMaxFPS {
+		t.Fatalf("graphical frame-rate defaults not applied: web=%d vnc=%d", cfg.Sessions["web"].FrameRate(), cfg.Sessions["vnc"].FrameRate())
+	}
 }
 
 func TestResolvePrecedence(t *testing.T) {
@@ -326,5 +329,20 @@ func TestWebReloadIntervalRejectsSubsecondValues(t *testing.T) {
 	cfg.Sessions["web"] = session
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("1s reload_interval should be valid: %v", err)
+	}
+}
+
+func TestGraphicalMaxFPSValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Sessions["web"] = Session{Type: "web", URL: "https://example.test", MaxFPS: MaximumGraphicalMaxFPS + 1}
+	cfg.applyDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected out-of-range max_fps to fail")
+	}
+	session := cfg.Sessions["web"]
+	session.MaxFPS = 15
+	cfg.Sessions["web"] = session
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("15 fps should be valid: %v", err)
 	}
 }

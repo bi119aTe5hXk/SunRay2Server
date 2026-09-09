@@ -180,6 +180,44 @@ func TestFrameDeliveryCoalescesUpdatesWhileDisplayIsBusy(t *testing.T) {
 	}
 }
 
+func TestFrameInterval(t *testing.T) {
+	if got := frameInterval(20); got != 50*time.Millisecond {
+		t.Fatalf("20 fps interval = %v, want 50ms", got)
+	}
+	if got := frameInterval(0); got != 0 {
+		t.Fatalf("uncapped interval = %v, want 0", got)
+	}
+}
+
+func TestFrameDeliveryHonorsMaxFPS(t *testing.T) {
+	delivered := make(chan time.Time, 2)
+	session := NewSession(Config{MaxFPS: 20, OnFrame: func(_ *image.RGBA, _ []display.RegionUpdate, _ bool) error {
+		delivered <- time.Now()
+		return nil
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go session.frameLoop(ctx)
+
+	frame := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	update := []display.RegionUpdate{{Rectangle: frame.Bounds()}}
+	if err := session.enqueueFrame(frame, update, false); err != nil {
+		t.Fatal(err)
+	}
+	first := <-delivered
+	if err := session.enqueueFrame(frame, update, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case second := <-delivered:
+		if spacing := second.Sub(first); spacing < 40*time.Millisecond {
+			t.Fatalf("20 fps frame spacing = %v, want at least 40ms", spacing)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for rate-limited frame")
+	}
+}
+
 func TestChangedRectanglesKeepDistantUpdatesSeparate(t *testing.T) {
 	bounds := image.Rect(0, 0, 1400, 1050)
 	rectangles := appendChangedUpdate(nil, display.RegionUpdate{Rectangle: image.Rect(10, 10, 20, 20)}, bounds)

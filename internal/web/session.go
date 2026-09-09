@@ -33,6 +33,7 @@ type Config struct {
 	BrowserNoSandbox bool
 	Interactive      bool
 	ReloadInterval   time.Duration
+	MaxFPS           int
 	Logger           *slog.Logger
 	OnFrame          func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
@@ -138,6 +139,7 @@ func (s *Session) Run(ctx context.Context) error {
 		ScreenWidth:  s.config.ScreenWidth,
 		ScreenHeight: s.config.ScreenHeight,
 		ScaleToFit:   false,
+		MaxFPS:       s.config.MaxFPS,
 		Logger:       s.config.Logger,
 		OnFrame:      s.config.OnFrame,
 	})
