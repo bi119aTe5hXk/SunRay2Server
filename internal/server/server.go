@@ -533,11 +533,12 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 
 func (s *Server) startWeb(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, logger *slog.Logger) {
 	mode, screenWidth, screenHeight := webDisplayGeometry(active, definition)
-	logger.Info("web display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight))
+	interactive := definition.WebInteractive()
+	logger.Info("web display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight), "interactive", interactive)
 	firstFrame := true
 	session := web.NewSession(web.Config{
 		URL: definition.URL, ScreenWidth: screenWidth, ScreenHeight: screenHeight,
-		BrowserNoSandbox: definition.BrowserNoSandbox, Logger: logger,
+		BrowserNoSandbox: definition.BrowserNoSandbox, Interactive: interactive, Logger: logger,
 		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
 			if !s.isCurrentSession(key, active.client, generation) {
 				return context.Canceled
@@ -547,13 +548,20 @@ func (s *Server) startWeb(ctx context.Context, key string, active activeDisplay,
 				if err := active.client.ShowImage(screenWidth, screenHeight, frame); err != nil {
 					return err
 				}
-				return active.client.Send(display.LocalCursor())
+				if interactive {
+					return active.client.Send(display.LocalCursor())
+				}
+				return active.client.Send(display.InvisibleCursor())
 			}
 			return active.client.ShowImageRegions(screenWidth, screenHeight, frame, changed)
 		},
 	})
 	active.client.SetResyncHandler(session.RequestFullFrame)
-	active.client.SetInputHandler(session.HandleInput)
+	if interactive {
+		active.client.SetInputHandler(session.HandleInput)
+	} else {
+		active.client.SetInputHandler(nil)
+	}
 	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
 		logger.Warn("web session stopped", "url", definition.URL, "error", err)
 		if s.isCurrentSession(key, active.client, generation) {

@@ -291,4 +291,17 @@ func TestProjectTemplateLoads(t *testing.T) {
 	if cfg.Sessions["card-test"].Type != "card-test" || cfg.Sessions["geometry-test"].Type != "geometry-test" || cfg.Sessions["example-vnc"].Type != "vnc" || cfg.Sessions["example-web"].Type != "web" {
 		t.Fatalf("unexpected template sessions: %#v", cfg.Sessions)
 	}
+	if !cfg.Sessions["example-web"].WebInteractive() {
+		t.Fatal("template web session unexpectedly disables interaction")
+	}
+}
+
+func TestWebInteractiveDefaultsEnabledAndHonorsFalse(t *testing.T) {
+	if !(Session{Type: "web"}).WebInteractive() {
+		t.Fatal("omitted interactive option should default to enabled")
+	}
+	disabled := false
+	if (Session{Type: "web", Interactive: &disabled}).WebInteractive() {
+		t.Fatal("explicit interactive false should disable interaction")
+	}
 }

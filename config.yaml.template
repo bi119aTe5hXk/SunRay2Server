@@ -39,11 +39,14 @@ sessions:
 
   # Full-screen Chromium dashboard. The page stays loaded, so JavaScript,
   # timers, SSE and WebSocket updates continue without periodic reloads.
-  # Keyboard/mouse input is forwarded through the same local VNC bridge used
-  # by RDP. Ctrl+R/F5 reload; Alt+Left/Alt+Right navigate history.
+  # WebGL/WebGL2 use Chromium's CPU-based SwiftShader renderer under Xvfb.
+  # With interactive enabled, keyboard/mouse input is forwarded through the
+  # same local VNC bridge used by RDP. Ctrl+R/F5 reload; Alt+Left/Alt+Right
+  # navigate history. Set it to false for a display-only page with no cursor.
   example-web:
     type: web
     url: https://example.com/
+    interactive: true
     # current, terminal, or manual.
     resolution_mode: current
     # display_width: 1400

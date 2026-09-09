@@ -22,6 +22,9 @@ func TestChromiumArgumentsUsePersistentPageAndExactViewport(t *testing.T) {
 		"--window-size=1401,1051",
 		"--force-device-scale-factor=1",
 		"--user-data-dir=/tmp/profile",
+		"--use-gl=angle",
+		"--use-angle=swiftshader-webgl",
+		"--enable-unsafe-swiftshader",
 	} {
 		if !slices.Contains(arguments, expected) {
 			t.Errorf("missing argument %q in %#v", expected, arguments)

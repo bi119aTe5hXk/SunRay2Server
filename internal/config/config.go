@@ -72,6 +72,14 @@ type Session struct {
 	Certificate           string  `yaml:"certificate,omitempty"`
 	URL                   string  `yaml:"url,omitempty"`
 	BrowserNoSandbox      bool    `yaml:"browser_no_sandbox,omitempty"`
+	Interactive           *bool   `yaml:"interactive,omitempty"`
+}
+
+// WebInteractive reports whether a web session accepts local input. A pointer
+// preserves the distinction between an omitted option (enabled by default) and
+// an explicit false value in YAML.
+func (s Session) WebInteractive() bool {
+	return s.Interactive == nil || *s.Interactive
 }
 
 type Routing struct {

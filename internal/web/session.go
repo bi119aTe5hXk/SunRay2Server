@@ -31,6 +31,7 @@ type Config struct {
 	ScreenWidth      int
 	ScreenHeight     int
 	BrowserNoSandbox bool
+	Interactive      bool
 	Logger           *slog.Logger
 	OnFrame          func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error
 }
@@ -57,6 +58,9 @@ func NewSession(config Config) *Session {
 }
 
 func (s *Session) HandleInput(event display.InputEvent) {
+	if !s.config.Interactive {
+		return
+	}
 	s.mu.RLock()
 	current := s.current
 	s.mu.RUnlock()
@@ -184,6 +188,12 @@ func chromiumArguments(config Config, profileDir string) []string {
 		"--disable-background-timer-throttling",
 		"--disable-backgrounding-occluded-windows",
 		"--disable-renderer-backgrounding",
+		// Xvfb has no physical GPU. Chromium no longer enables SwiftShader as
+		// an automatic WebGL fallback, so opt in explicitly for canvas-heavy
+		// dashboards while leaving ordinary page compositing unchanged.
+		"--use-gl=angle",
+		"--use-angle=swiftshader-webgl",
+		"--enable-unsafe-swiftshader",
 		"--password-store=basic",
 		"--ozone-platform=x11",
 	}

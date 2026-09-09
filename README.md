@@ -82,6 +82,7 @@ sessions:
   dashboard:
     type: web
     url: https://example.com/
+    interactive: true
     resolution_mode: current
   office-vnc:
     type: vnc
@@ -143,7 +144,8 @@ VNC, RDP, and web resolution modes:
 A `web` session opens its `url` as a full-screen Chromium application inside a
 private Xvfb display. The page remains loaded: JavaScript timers, WebSocket,
 SSE, and page-managed updates continue normally, with no periodic reload.
-Framebuffer changes are forwarded through the local VNC bridge.
+Framebuffer changes are forwarded through the local VNC bridge. WebGL and
+WebGL2 use Chromium's CPU-based SwiftShader renderer because Xvfb has no GPU.
 
 ```yaml
 sessions:
@@ -154,15 +156,19 @@ sessions:
     browser_no_sandbox: true # commonly required by Docker/LXC
 ```
 
-Mouse, wheel, and keyboard input are forwarded to Chromium. `Ctrl+R` or `F5`
-reloads, `Alt+Left` goes back, and `Alt+Right` goes forward. Web sessions support
-the same `current`, `terminal`, and `manual` resolution modes as RDP.
+`interactive` defaults to `true`, forwarding mouse, wheel, and keyboard input to
+Chromium and showing the Sun Ray local cursor. Set it to `false` for a
+display-only page: all keyboard and mouse input is ignored and the cursor is
+hidden. When interaction is enabled, `Ctrl+R` or `F5` reloads, `Alt+Left` goes
+back, and `Alt+Right` goes forward. Web sessions support the same `current`,
+`terminal`, and `manual` resolution modes as RDP.
 
 Chromium's sandbox is enabled by default in the application. Docker and nested
 LXC environments commonly block the required namespaces, so the supplied YAML
 template explicitly sets `browser_no_sandbox: true`. This weakens browser
 isolation: use trusted URLs and set it back to `false` when the host supports
-Chromium's sandbox.
+Chromium's sandbox. SwiftShader itself is also an explicitly enabled software
+WebGL fallback, so avoid loading untrusted pages.
 
 ### SSH
 
