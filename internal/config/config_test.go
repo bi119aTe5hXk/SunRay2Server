@@ -153,6 +153,34 @@ func TestRDPDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestWebDefaultsAndValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Sessions["web"] = Session{Type: "web", URL: "https://example.test/dashboard"}
+	cfg.applyDefaults()
+	web := cfg.Sessions["web"]
+	if web.ResolutionMode != WebResolutionCurrent {
+		t.Fatalf("unexpected web defaults: %#v", web)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	web.ResolutionMode = WebResolutionManual
+	web.DisplayWidth, web.DisplayHeight = 1400, 1050
+	cfg.Sessions["web"] = web
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, invalidURL := range []string{"", "example.test", "file:///tmp/dashboard.html", "javascript:alert(1)"} {
+		web.URL = invalidURL
+		cfg.Sessions["web"] = web
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("expected web URL %q to fail", invalidURL)
+		}
+	}
+}
+
 func TestVNCPasswordSourcesArePerSessionAndMutuallyExclusive(t *testing.T) {
 	cfg := Default()
 	cfg.Sessions["vnc-one"] = Session{Type: "vnc", Address: "server-one:5900", Password: "one"}
@@ -260,7 +288,7 @@ func TestProjectTemplateLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Sessions["card-test"].Type != "card-test" || cfg.Sessions["geometry-test"].Type != "geometry-test" || cfg.Sessions["example-vnc"].Type != "vnc" {
+	if cfg.Sessions["card-test"].Type != "card-test" || cfg.Sessions["geometry-test"].Type != "geometry-test" || cfg.Sessions["example-vnc"].Type != "vnc" || cfg.Sessions["example-web"].Type != "web" {
 		t.Fatalf("unexpected template sessions: %#v", cfg.Sessions)
 	}
 }

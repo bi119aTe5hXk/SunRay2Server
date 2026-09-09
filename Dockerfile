@@ -12,6 +12,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/sunrayd ./cmd/sunr
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    chromium \
+    chromium-sandbox \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
     freerdp2-x11 \
     x11vnc \
     xauth \

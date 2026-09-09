@@ -1,5 +1,5 @@
 # SunRay2Server configuration template.
-# Copy this file to config.yaml and adjust the VNC address before deployment.
+# Copy this file to config.yaml and adjust the desired session routes.
 version: 1
 
 server:
@@ -36,6 +36,22 @@ sessions:
   # use the arrow keys until all four colored edges fit without panning.
   geometry-test:
     type: geometry-test
+
+  # Full-screen Chromium dashboard. The page stays loaded, so JavaScript,
+  # timers, SSE and WebSocket updates continue without periodic reloads.
+  # Keyboard/mouse input is forwarded through the same local VNC bridge used
+  # by RDP. Ctrl+R/F5 reload; Alt+Left/Alt+Right navigate history.
+  example-web:
+    type: web
+    url: https://example.com/
+    # current, terminal, or manual.
+    resolution_mode: current
+    # display_width: 1400
+    # display_height: 1050
+    # Docker and nested LXC commonly block Chromium's sandbox namespaces, so
+    # the Compose-ready example enables this compatibility mode. Set it to
+    # false when the host supports Chromium's sandbox, and use trusted URLs.
+    browser_no_sandbox: true
 
   example-vnc:
     type: vnc
@@ -104,6 +120,8 @@ routing:
     card_present: example-vnc
     # For calibration, temporarily use:
     # no_card: geometry-test
+    # To show the web page without a card, use:
+    # no_card: example-web
 
     # Exact IDs override card_present when the terminal can report a real ID.
     # cards:
@@ -115,5 +133,6 @@ routing:
     "00144fd19044":
       no_card: card-test
       card_present: example-vnc
+      # no_card: example-web
       # cards:
       #   "0x0123456789abcdef": example-vnc

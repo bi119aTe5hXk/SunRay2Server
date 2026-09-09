@@ -25,6 +25,7 @@ import (
 	"sunray2server/internal/rdp"
 	"sunray2server/internal/sshclient"
 	"sunray2server/internal/vnc"
+	"sunray2server/internal/web"
 )
 
 type Config struct {
@@ -392,6 +393,14 @@ func (s *Server) runSession(ctx context.Context, key string, active activeDispla
 			}
 		}
 		s.startRDP(ctx, key, active, generation, definition, password, logger)
+	case "web":
+		connecting := display.CardStatusImage(s.config.Image, "WEB", definition.URL, "CONNECT")
+		if s.isCurrentSession(key, active.client, generation) {
+			if err := active.client.ShowImage(active.width, active.height, connecting); err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Warn("web connecting screen failed", "error", err)
+			}
+		}
+		s.startWeb(ctx, key, active, generation, definition, logger)
 	}
 }
 
@@ -522,6 +531,38 @@ func (s *Server) startRDP(ctx context.Context, key string, active activeDisplay,
 	}
 }
 
+func (s *Server) startWeb(ctx context.Context, key string, active activeDisplay, generation uint64, definition appconfig.Session, logger *slog.Logger) {
+	mode, screenWidth, screenHeight := webDisplayGeometry(active, definition)
+	logger.Info("web display geometry selected", "mode", mode, "resolution", resolutionDescription(screenWidth, screenHeight))
+	firstFrame := true
+	session := web.NewSession(web.Config{
+		URL: definition.URL, ScreenWidth: screenWidth, ScreenHeight: screenHeight,
+		BrowserNoSandbox: definition.BrowserNoSandbox, Logger: logger,
+		OnFrame: func(frame *image.RGBA, changed []display.RegionUpdate, resized bool) error {
+			if !s.isCurrentSession(key, active.client, generation) {
+				return context.Canceled
+			}
+			if firstFrame || resized {
+				firstFrame = false
+				if err := active.client.ShowImage(screenWidth, screenHeight, frame); err != nil {
+					return err
+				}
+				return active.client.Send(display.LocalCursor())
+			}
+			return active.client.ShowImageRegions(screenWidth, screenHeight, frame, changed)
+		},
+	})
+	active.client.SetResyncHandler(session.RequestFullFrame)
+	active.client.SetInputHandler(session.HandleInput)
+	if err := session.Run(ctx); err != nil && ctx.Err() == nil {
+		logger.Warn("web session stopped", "url", definition.URL, "error", err)
+		if s.isCurrentSession(key, active.client, generation) {
+			failure := display.CardStatusImage(s.config.Image, "WEB ERROR", definition.URL, "CHECK LOG")
+			_ = active.client.ShowImage(active.width, active.height, failure)
+		}
+	}
+}
+
 func vncDisplayGeometry(active activeDisplay, definition appconfig.Session) (string, int, int) {
 	switch definition.ResolutionMode {
 	case appconfig.VNCResolutionTerminal:
@@ -543,6 +584,17 @@ func rdpDisplayGeometry(active activeDisplay, definition appconfig.Session) (str
 		return definition.ResolutionMode, definition.DisplayWidth, definition.DisplayHeight
 	default:
 		return appconfig.RDPResolutionCurrent, active.width, active.height
+	}
+}
+
+func webDisplayGeometry(active activeDisplay, definition appconfig.Session) (string, int, int) {
+	switch definition.ResolutionMode {
+	case appconfig.WebResolutionTerminal:
+		return definition.ResolutionMode, active.reportedWidth, active.reportedHeight
+	case appconfig.WebResolutionManual:
+		return definition.ResolutionMode, definition.DisplayWidth, definition.DisplayHeight
+	default:
+		return appconfig.WebResolutionCurrent, active.width, active.height
 	}
 }
 

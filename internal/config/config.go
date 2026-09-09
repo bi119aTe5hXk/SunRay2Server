@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,9 @@ const (
 	RDPResolutionCurrent  = "current"
 	RDPResolutionTerminal = "terminal"
 	RDPResolutionManual   = "manual"
+	WebResolutionCurrent  = "current"
+	WebResolutionTerminal = "terminal"
+	WebResolutionManual   = "manual"
 )
 
 type Config struct {
@@ -66,6 +70,8 @@ type Session struct {
 	DisplayWidth          int     `yaml:"display_width,omitempty"`
 	DisplayHeight         int     `yaml:"display_height,omitempty"`
 	Certificate           string  `yaml:"certificate,omitempty"`
+	URL                   string  `yaml:"url,omitempty"`
+	BrowserNoSandbox      bool    `yaml:"browser_no_sandbox,omitempty"`
 }
 
 type Routing struct {
@@ -155,6 +161,9 @@ func (c *Config) applyDefaults() {
 		if session.Type == "rdp" && strings.TrimSpace(session.Certificate) == "" {
 			session.Certificate = "deny"
 		}
+		if session.Type == "web" && session.ResolutionMode == "" {
+			session.ResolutionMode = WebResolutionCurrent
+		}
 		c.Sessions[name] = session
 	}
 }
@@ -233,6 +242,23 @@ func (c *Config) Validate() error {
 				}
 			default:
 				return fmt.Errorf("session %q has invalid VNC resolution_mode %q", name, resolutionMode)
+			}
+		case "web":
+			pageURL, err := url.ParseRequestURI(strings.TrimSpace(session.URL))
+			if err != nil || pageURL.Host == "" || (pageURL.Scheme != "http" && pageURL.Scheme != "https") {
+				return fmt.Errorf("session %q has invalid web URL %q (only http and https are supported)", name, session.URL)
+			}
+			switch session.ResolutionMode {
+			case WebResolutionCurrent, WebResolutionTerminal:
+				if session.DisplayWidth != 0 || session.DisplayHeight != 0 {
+					return fmt.Errorf("session %q may set display_width and display_height only with resolution_mode manual", name)
+				}
+			case WebResolutionManual:
+				if session.DisplayWidth < 1 || session.DisplayWidth > 8192 || session.DisplayHeight < 1 || session.DisplayHeight > 8192 {
+					return fmt.Errorf("session %q has invalid manual display resolution %dx%d", name, session.DisplayWidth, session.DisplayHeight)
+				}
+			default:
+				return fmt.Errorf("session %q has invalid web resolution_mode %q", name, session.ResolutionMode)
 			}
 		case "ssh", "rdp":
 			if strings.TrimSpace(session.Hostname) == "" {
